@@ -79,6 +79,41 @@ createNode('Slack', 'n8n-nodes-base.slack', { channel: '#general', text: 'Hello'
 ```
 The actual credential IDs/names must match what's configured in n8n.
 
+## Notion Contacts Database
+Many workflows interact with the master contacts database in Notion.
+
+- **Database ID**: `1688ebaf15ee80f99cc3d65aa82fdbc1`
+- **Lookup field**: `Identifier` (title property, contains the email address)
+- **Notion node version**: use `typeVersion: 2.2`
+
+### Property names and assumed types
+| Notion Property   | Type          | Incoming field     |
+|-------------------|---------------|--------------------|
+| Identifier        | title         | email              |
+| Email             | email         | email              |
+| First name        | rich_text     | first_name         |
+| Last name         | rich_text     | last_name          |
+| Company name      | rich_text     | company            |
+| Email marketing   | rich_text     | email_marketing    |
+| Tags              | multi_select  | tags (string[])    |
+| Street Address    | rich_text     | street_address     |
+| Address Line 2    | rich_text     | street_address_2   |
+| City              | rich_text     | city               |
+| State             | rich_text     | state              |
+| Postal Code       | rich_text     | postal_code        |
+| Country           | rich_text     | country            |
+| Phone             | phone_number  | phone              |
+| Birthday          | date          | birthday (ISO)     |
+
+### Upsert pattern
+The `upsert-contact` sub-workflow implements the standard contact upsert:
+1. Lookup by Identifier (email) with `alwaysOutputData: true` on the Notion node
+2. IF node checks whether `$json.id` exists (Notion page ID)
+3. True branch: Code node merges incoming + existing (non-null incoming wins), then Notion Update
+4. False branch: Notion Create with incoming data
+
+Other workflows that modify contacts should call the upsert sub-workflow rather than writing to Notion directly.
+
 ## Guidelines for Claude
 - Always use `lib/workflow.js` helpers to build workflows — never hand-write raw JSON
 - Test builds with `node build.js` after creating or modifying workflows
@@ -87,3 +122,7 @@ The actual credential IDs/names must match what's configured in n8n.
 - Keep workflow files focused: one automation per file
 - Prefer descriptive node names that explain what the node does
 - Use `connect()` for all wiring — it handles n8n's nested connection format
+- Extra node properties (like `settings`, `onError`) can be added directly to the node object after `createNode()` returns
+- For sub-workflows, use `n8n-nodes-base.executeWorkflowTrigger` as the entry point
+- For IF node v2, use the `conditions.conditions[].operator` structure with `{ type, operation, singleValue }`
+- After import, Notion nodes will need their credential connected and property mappings verified in the n8n UI
