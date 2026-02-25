@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git init:*)",
+      "Bash(node build.js:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}

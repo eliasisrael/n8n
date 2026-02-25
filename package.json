@@ -1,0 +1,13 @@
+{
+  "name": "n8n-workflows",
+  "version": "1.0.0",
+  "description": "Programmatic n8n workflow definitions compiled to importable JSON",
+  "type": "module",
+  "scripts": {
+    "build": "node build.js",
+    "build:one": "node build.js --workflow"
+  },
+  "keywords": ["n8n", "workflows", "automation"],
+  "license": "UNLICENSED",
+  "private": true
+}
