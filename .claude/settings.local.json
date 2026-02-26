@@ -3,7 +3,15 @@
     "allow": [
       "Bash(git init:*)",
       "Bash(node build.js:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git push:*)",
+      "Bash(node -e:*)",
+      "WebFetch(domain:docs.n8n.io)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:fossies.org)",
+      "WebFetch(domain:github.com)",
+      "Bash(node:*)",
+      "Bash(git commit:*)"
     ]
   }
 }
