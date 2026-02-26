@@ -10,9 +10,10 @@
  *     country, phone, birthday }
  *
  * Logic:
- *   1. Look up existing contact by Identifier (email) in Notion
- *   2. If found → merge (prefer non-null incoming values) → update
- *   3. If not found → create new record
+ *   1. Validate that email is present — skip record if missing
+ *   2. Look up existing contact by Identifier (email) in Notion
+ *   3. If found → merge (prefer non-null incoming values) → update
+ *   4. If not found → create new record
  *
  * After import into n8n:
  *   - Connect the Notion credential on each Notion node
@@ -75,6 +76,36 @@ const trigger = createNode(
   { position: [250, 300], typeVersion: 1.1 },
 );
 
+// Gate: skip records that have no email — nothing useful to upsert.
+const hasEmail = createNode(
+  'Has Email?',
+  'n8n-nodes-base.filter',
+  {
+    conditions: {
+      options: {
+        caseSensitive: true,
+        leftValue: '',
+        typeValidation: 'strict',
+      },
+      conditions: [
+        {
+          id: crypto.randomUUID(),
+          leftValue: '={{ $json.email }}',
+          rightValue: '',
+          operator: {
+            type: 'string',
+            operation: 'notEmpty',
+            singleValue: true,
+          },
+        },
+      ],
+      combinator: 'and',
+    },
+    options: {},
+  },
+  { position: [500, 300], typeVersion: 2 },
+);
+
 // Query Notion for an existing contact whose Identifier matches the email.
 const lookup = createNode(
   'Lookup Contact',
@@ -98,7 +129,7 @@ const lookup = createNode(
       combinator: 'and',
     },
   },
-  { position: [500, 300], typeVersion: 2.2 },
+  { position: [750, 300], typeVersion: 2.2 },
 );
 
 // Ensure the IF node runs even when the lookup returns zero results.
@@ -113,6 +144,7 @@ const ifExists = createNode(
       options: {
         caseSensitive: true,
         leftValue: '',
+        typeValidation: 'strict',
       },
       conditions: [
         {
@@ -130,7 +162,7 @@ const ifExists = createNode(
     },
     options: {},
   },
-  { position: [750, 300], typeVersion: 2 },
+  { position: [1000, 300], typeVersion: 2 },
 );
 
 // ---------------------------------------------------------------------------
@@ -141,7 +173,7 @@ const MERGE_CODE = `
 // Incoming contact from the calling workflow
 const incoming = $('Receive Contact').first().json;
 // Existing Notion record (simplified output — properties are top-level keys)
-const existing = $input.first().json;
+const existing = $json;
 
 /**
  * Returns true when a value carries meaningful data (i.e. is not null,
@@ -171,7 +203,7 @@ for (const [inKey, notionProp] of Object.entries(fieldMap)) {
   merged[notionProp] = hasValue(newVal) ? newVal : (oldVal ?? null);
 }
 
-return [{ json: merged }];
+return { json: merged };
 `.trim();
 
 const merge = createNode(
@@ -179,9 +211,9 @@ const merge = createNode(
   'n8n-nodes-base.code',
   {
     jsCode: MERGE_CODE,
-    mode: 'runOnceForAllItems',
+    mode: 'runOnceForEachItem',
   },
-  { position: [1000, 150], typeVersion: 2 },
+  { position: [1250, 150], typeVersion: 2 },
 );
 
 const update = createNode(
@@ -211,7 +243,7 @@ const update = createNode(
       ],
     },
   },
-  { position: [1250, 150], typeVersion: 2.2 },
+  { position: [1500, 150], typeVersion: 2.2 },
 );
 
 // ---------------------------------------------------------------------------
@@ -248,7 +280,7 @@ const create = createNode(
       ],
     },
   },
-  { position: [1000, 450], typeVersion: 2.2 },
+  { position: [1250, 450], typeVersion: 2.2 },
 );
 
 // ---------------------------------------------------------------------------
@@ -256,13 +288,14 @@ const create = createNode(
 // ---------------------------------------------------------------------------
 
 export default createWorkflow('Notion Master Contact Upsert', {
-  nodes: [trigger, lookup, ifExists, merge, update, create],
+  nodes: [trigger, hasEmail, lookup, ifExists, merge, update, create],
   connections: [
-    connect(trigger, lookup),
+    connect(trigger, hasEmail),
+    connect(hasEmail, lookup),         // passes through only if email is present
     connect(lookup, ifExists),
-    connect(ifExists, merge, 0, 0),   // true  → merge & update
+    connect(ifExists, merge, 0, 0),    // true  → merge & update
     connect(merge, update),
-    connect(ifExists, create, 1, 0),  // false → create
+    connect(ifExists, create, 1, 0),   // false → create
   ],
   tags: ['sub-workflow', 'contacts'],
 });

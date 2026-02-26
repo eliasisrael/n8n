@@ -107,14 +107,17 @@ Many workflows interact with the master contacts database in Notion.
 
 ### Upsert pattern
 The `upsert-contact` sub-workflow implements the standard contact upsert:
-1. Lookup by Identifier (email) with `alwaysOutputData: true` on the Notion node
-2. IF node checks whether `$json.id` exists (Notion page ID)
-3. True branch: Code node merges incoming + existing (non-null incoming wins), then Notion Update
-4. False branch: Notion Create with incoming data
+1. Filter node validates email is present — records without email are dropped
+2. Lookup by Identifier (email) with `alwaysOutputData: true` on the Notion node
+3. IF node checks whether `$json.id` exists (Notion page ID)
+4. True branch: Code node merges incoming + existing (non-null incoming wins), then Notion Update
+5. False branch: Notion Create with incoming data
 
 Other workflows that modify contacts should call the upsert sub-workflow rather than writing to Notion directly.
 
 ## Guidelines for Claude
+- **Always check `LESSONS.md`** before designing solutions — it contains hard-won knowledge about n8n parameter formats and import quirks
+- **Always record new lessons** in `LESSONS.md` when a bug is found, a workaround is discovered, or something behaves differently than expected
 - Always use `lib/workflow.js` helpers to build workflows — never hand-write raw JSON
 - Test builds with `node build.js` after creating or modifying workflows
 - Node type IDs must match n8n 1.x naming (e.g., `n8n-nodes-base.httpRequest`, not legacy names)

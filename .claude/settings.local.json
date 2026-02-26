@@ -11,7 +11,10 @@
       "WebFetch(domain:fossies.org)",
       "WebFetch(domain:github.com)",
       "Bash(node:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(curl:*)",
+      "Bash(python3 -c \" import json, sys data = json.load\\(sys.stdin\\) for item in data.get\\(''tree'', []\\): path = item.get\\(''path'', ''''\\) if ''filter'' in path.lower\\(\\) or ''Filter'' in path: if ''node_modules'' not in path: print\\(path\\) \")",
+      "Bash(python3 -c \" import json, sys data = json.load\\(sys.stdin\\) for item in data.get\\(''tree'', []\\): path = item.get\\(''path'', ''''\\) if ''filter'' in path.lower\\(\\) or ''Filter'' in path: if ''node_modules'' not in path and \\(''packages/nodes-base/nodes/Filter'' in path or ''FilterConditions'' in path or ''packages/workflow'' in path\\): print\\(path\\) \")"
     ]
   }
 }
