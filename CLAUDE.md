@@ -93,8 +93,8 @@ Many workflows interact with the master contacts database in Notion.
 | Email             | email         | email              |
 | First name        | rich_text     | first_name         |
 | Last name         | rich_text     | last_name          |
-| Company name      | rich_text     | company            |
-| Email marketing   | rich_text     | email_marketing    |
+| Company Name      | rich_text     | company            |
+| Email Marketing   | select        | email_marketing    |
 | Tags              | multi_select  | tags (string[])    |
 | Street Address    | rich_text     | street_address     |
 | Address Line 2    | rich_text     | street_address_2   |

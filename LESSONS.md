@@ -152,5 +152,35 @@ Example: a Notion database with properties "Identifier" (title), "Email" (email)
 
 **This means**: when reading Notion getAll output in a Code node, use the `property_xxx` field names. When *writing* to Notion via `propertiesUi`, continue using the display names with types (e.g., `First name|rich_text`).
 
+### Notion propertiesUi (create/update) uses DIFFERENT value fields from filters (getAll)
+The `propertiesUi.propertyValues` entries in the Notion node's **create** and **update** operations use **different parameter names** from the `filters.conditions` entries in **getAll**. Do NOT mix them up.
+
+**Filter (getAll)** value fields (documented above):
+- `titleValue`, `richTextValue`, `emailValue`, `phoneNumberValue`, …
+
+**PropertiesUi (create/update)** value fields:
+| Property type   | Value field(s)                                                    |
+|-----------------|-------------------------------------------------------------------|
+| `title`         | `title` (string)                                                  |
+| `rich_text`     | `richText` (boolean, default false) + `textContent` (string)      |
+| `email`         | `emailValue` (string)                                             |
+| `phone_number`  | `phoneValue` (string)                                             |
+| `multi_select`  | `multiSelectValue` (comma-separated string or array)              |
+| `date`          | `range` (boolean), `includeTime` (boolean), `date` (ISO string), `timezone` (string, default `'default'`) |
+| `number`        | `numberValue` (number)                                            |
+| `checkbox`      | `checkboxValue` (boolean)                                         |
+| `select`        | `selectValue` (string)                                            |
+| `url`           | `urlValue` (string)                                               |
+
+**Critical mistakes:**
+- Using `richTextValue` in create/update propertiesUi → silently ignored; the correct field is `textContent` with `richText: false`
+- Omitting `richText: false` → n8n looks for the complex `text` fixedCollection structure instead of `textContent`
+- Omitting `range: false` on date fields → n8n may look for `dateStart`/`dateEnd` instead of `date`
+
+**Example — rich_text property in propertiesUi:**
+```json
+{ "key": "First name|rich_text", "richText": false, "textContent": "={{ $json[\"First name\"] }}" }
+```
+
 ### Always verify parameter names against n8n source code
 n8n's internal parameter names often differ from what the UI labels suggest. When a node doesn't render correctly after JSON import, check the actual node source on GitHub (`packages/nodes-base/nodes/<NodeName>/`) and test fixtures for the ground truth.
