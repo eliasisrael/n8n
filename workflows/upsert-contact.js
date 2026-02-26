@@ -214,6 +214,22 @@ function hasValue(val) {
   return true;
 }
 
+/**
+ * Returns true when two values are effectively equal.
+ * Treats null, undefined, and empty string as equivalent ("no value").
+ * Compares arrays by JSON serialisation (handles tags).
+ */
+function valuesEqual(a, b) {
+  const emptyA = !hasValue(a);
+  const emptyB = !hasValue(b);
+  if (emptyA && emptyB) return true;
+  if (emptyA !== emptyB) return false;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+  return a === b;
+}
+
 // Field mapping:
 //   incoming key → { prop: Notion property name (for output), notionKey: simplified output field }
 // Notion v2.2 simplified output uses "property_" + snake_case, e.g. "First name" → "property_first_name"
@@ -233,13 +249,20 @@ for (const item of $input.all()) {
 
   // For every mapped field, prefer the incoming value when it has data;
   // otherwise keep the existing Notion value.
+  // Track whether any field actually changed from the stored value.
+  let changed = false;
   for (const [inKey, mapping] of Object.entries(fieldMap)) {
     const newVal = data[inKey];              // incoming value
     const oldVal = data[mapping.notionKey];  // existing Notion value
-    merged[mapping.prop] = hasValue(newVal) ? newVal : (oldVal ?? null);
+    const mergedVal = hasValue(newVal) ? newVal : (oldVal ?? null);
+    merged[mapping.prop] = mergedVal;
+
+    if (!valuesEqual(mergedVal, oldVal)) changed = true;
   }
 
-  results.push({ json: merged });
+  // Only emit records that have at least one changed field —
+  // skip the Notion update when every value is already up-to-date.
+  if (changed) results.push({ json: merged });
 }
 
 return results;
