@@ -182,5 +182,10 @@ The `propertiesUi.propertyValues` entries in the Notion node's **create** and **
 { "key": "First name|rich_text", "richText": false, "textContent": "={{ $json[\"First name\"] }}" }
 ```
 
+### Notion date fields in propertiesUi cannot be null/undefined
+When a date property is included in `propertiesUi.propertyValues` (create or update), n8n always evaluates the `date` expression and passes it through `new Date(value)`. If the value is `null` or `undefined`, this produces the string `"Invalid Date"`, which the Notion API rejects with a 400 validation error: `body.properties.Birthday.date.start should be a valid ISO 8601 date string, instead was "Invalid date"`.
+
+There is no way to conditionally skip a field in `propertiesUi` — all listed properties are always sent. **Workaround**: either (a) remove the date field from `propertiesUi` entirely and handle it via a separate conditional path (Filter → dedicated Update node), or (b) don't include the date field if it's not always populated.
+
 ### Always verify parameter names against n8n source code
 n8n's internal parameter names often differ from what the UI labels suggest. When a node doesn't render correctly after JSON import, check the actual node source on GitHub (`packages/nodes-base/nodes/<NodeName>/`) and test fixtures for the ground truth.

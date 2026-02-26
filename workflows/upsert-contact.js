@@ -7,7 +7,7 @@
  * Input (from calling workflow):
  *   { email, first_name, last_name, company, email_marketing, tags,
  *     street_address, street_address_2, city, state, postal_code,
- *     country, phone, birthday }
+ *     country, phone }
  *
  * Logic:
  *   1. Validate that email is present — skip record if missing
@@ -49,7 +49,6 @@ const FIELD_MAP = {
   postal_code:      { prop: 'Postal Code',      notionKey: 'property_postal_code' },
   country:          { prop: 'Country',          notionKey: 'property_country' },
   phone:            { prop: 'Phone',            notionKey: 'property_phone' },
-  birthday:         { prop: 'Birthday',         notionKey: 'property_birthday' },
 };
 
 // ---------------------------------------------------------------------------
@@ -75,7 +74,6 @@ const trigger = createNode(
       postal_code: '62701',
       country: 'US',
       phone: '+1-555-123-4567',
-      birthday: '1990-01-15',
     }, null, 2),
   },
   { position: [250, 300], typeVersion: 1.1 },
@@ -305,7 +303,6 @@ const update = createNode(
         { key: 'Postal Code|rich_text',       richText: false, textContent: '={{ $json["Postal Code"] }}' },
         { key: 'Country|rich_text',           richText: false, textContent: '={{ $json.Country }}' },
         { key: 'Phone|phone_number',          phoneValue:    '={{ $json.Phone }}' },
-        { key: 'Birthday|date',               range: false, includeTime: false, date: '={{ $json.Birthday }}', timezone: 'default' },
       ],
     },
   },
@@ -346,7 +343,6 @@ const create = createNode(
         { key: 'Postal Code|rich_text',       richText: false, textContent: src('postal_code') },
         { key: 'Country|rich_text',           richText: false, textContent: src('country') },
         { key: 'Phone|phone_number',          phoneValue:    src('phone') },
-        { key: 'Birthday|date',               range: false, includeTime: false, date: src('birthday'), timezone: 'default' },
       ],
     },
   },

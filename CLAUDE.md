@@ -103,7 +103,6 @@ Many workflows interact with the master contacts database in Notion.
 | Postal Code       | rich_text     | postal_code        |
 | Country           | rich_text     | country            |
 | Phone             | phone_number  | phone              |
-| Birthday          | date          | birthday (ISO)     |
 
 ### Upsert pattern
 The `upsert-contact` sub-workflow implements the standard contact upsert:
