@@ -82,7 +82,7 @@ The actual credential IDs/names must match what's configured in n8n.
 ## Notion Contacts Database
 Many workflows interact with the master contacts database in Notion.
 
-- **Database ID**: `1688ebaf15ee80f99cc3d65aa82fdbc1`
+- **Database ID**: `1688ebaf-15ee-806b-bd12-dd7c8caf2bdd`
 - **Lookup field**: `Identifier` (title property, contains the email address)
 - **Notion node version**: use `typeVersion: 2.2`
 

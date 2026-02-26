@@ -29,14 +29,128 @@ The workflow JSON must include `staticData: null`, `pinData: {}`, `meta: { templ
 - Operators with `singleValue: true` (like `exists`, `notEmpty`) don't need a `rightValue`
 
 ### Code node execution mode matters
-- `runOnceForAllItems` processes all items in a single execution — this breaks item-level linkage to downstream nodes
-- `runOnceForEachItem` processes each item individually, preserving per-item context
-- In `runOnceForEachItem` mode, use `$json` for the current item (not `$input.first().json`) and return a single `{ json: ... }` object (not a wrapped array)
+- `runOnceForAllItems` processes all items in one execution; use `$('Node').first().json` and `$input.first().json`; return an array `[{ json: ... }]`
+- `runOnceForEachItem` processes each item individually; use `$json` for the current item and `$('Node').item.json` for paired items; return a single `{ json: ... }` object
+- **Item pairing breaks across data-replacing nodes**: In `runOnceForEachItem` mode, `$('Node').item` pairs items by index. If an intermediate node (like a Notion lookup) replaces the data entirely, the pairing between the original trigger output and the current item breaks — `$('Node').item.json` will return empty/null data
+- **`$('NodeName')` back-references are unreliable in the Code node sandbox**: The Code node's JavaScript sandbox may not support `$('NodeName').all()` or `$('NodeName').first()` the same way n8n's expression engine does. Calling `$('Receive Contact').first()` produced `"Property first does not exist on type"`, and `$('Receive Contact').all()` silently returned empty data. **Workaround**: use an n8n **Merge node** (v3, `combineByPosition`) to pair the original data with the downstream data before the Code node, so `$input.all()` contains everything the Code node needs — no back-references required
+- **When item pairing breaks, use a Merge node**: Instead of trying to reconstruct the pairing with `$('Trigger Node').all()` in a Code node (which may fail silently), use an n8n Merge node to explicitly combine the two data streams. Wire the original data (e.g., from a Filter node) into the Merge node's second input alongside the transformed data (e.g., from an IF TRUE branch) on the first input
 
 ## General Patterns
 
 ### Use Filter nodes instead of IF nodes for simple validation gates
 When you only need to drop records that fail a check (no logic needed on the failing branch), use a Filter node. An IF node with an empty false branch is wasteful.
+
+### Notion node `databaseId` and `pageId` use the resource locator pattern
+The Notion node v2 (typeVersion 2.2) defines `databaseId` and `pageId` as `resourceLocator` type parameters. A plain string value (e.g., `"databaseId": "abc123"`) is silently ignored on import — the database/page appears blank in the UI.
+
+The correct format wraps the value in an object with `__rl: true`:
+```json
+"databaseId": {
+  "__rl": true,
+  "mode": "id",
+  "value": "1688ebaf-15ee-806b-bd12-dd7c8caf2bdd"
+}
+```
+
+Supported modes:
+- `"id"` — raw UUID (with or without dashes), best for programmatic use
+- `"url"` — full Notion URL, the value is extracted via regex
+- `"list"` — selected from the UI dropdown; also carries `cachedResultName` and `cachedResultUrl`
+
+This applies to all operations: `create`, `getAll`, `get`, and `update` (for `pageId`).
+
+Expressions work inside the `value` field: `"value": "={{ $json.pageId }}"`.
+
+### Notion node v2 getAll filter structure (databasePage)
+The Notion node v2.2 `getAll` operation on `databasePage` uses a **completely different filter system** from the v1 node. The v1 node uses a `filter` parameter with `singleCondition`/`multipleCondition`. The v2 node uses `filterType` + `matchType` + `filters`.
+
+**`filterType` valid values** (v2 only, hidden for v1):
+- `"none"` — no filtering (default)
+- `"manual"` — build conditions in the UI
+- `"json"` — raw JSON filter (stored in `filterJson` parameter)
+
+**`matchType`** (only shown when `filterType` is `"manual"`):
+- `"anyFilter"` — OR logic (any condition can match)
+- `"allFilters"` — AND logic (all conditions must match)
+
+**`filters` structure** (when `filterType` is `"manual"`):
+```json
+"filters": {
+  "conditions": [
+    {
+      "key": "PropertyName|propertyType",
+      "condition": "equals",
+      "titleValue": "the value to match"
+    }
+  ]
+}
+```
+
+**Critical: the value field name depends on the property type** (the part after `|` in the key):
+| Property type     | Value field name     |
+|-------------------|----------------------|
+| `title`           | `titleValue`         |
+| `rich_text`       | `richTextValue`      |
+| `number`          | `numberValue`        |
+| `checkbox`        | `checkboxValue`      |
+| `select`          | `selectValue`        |
+| `multi_select`    | `multiSelectValue`   |
+| `status`          | `statusValue`        |
+| `date`            | `date`               |
+| `people`          | `peopleValue`        |
+| `relation`        | `relationValue`      |
+| `email`           | `emailValue`         |
+| `url`             | `urlValue`           |
+| `phone_number`    | `phoneNumberValue`   |
+| `created_by`      | `createdByValue`     |
+| `created_time`    | `createdTimeValue`   |
+| `last_edited_by`  | `lastEditedByValue`  |
+| `last_edited_time`| `lastEditedTime`     |
+| `formula`         | requires `returnType` field + type-specific value field |
+
+**Common mistakes:**
+- Using `filterType: "formula"` — this is NOT a valid value; `"formula"` is a **property type** used in the `key` field, not a filter type
+- Using a generic `value` field — there is no generic `value`; each property type has its own named value field
+- Including `returnType` or `combinator` — these are not part of the v2 manual filter structure (except `returnType` is used only when the property type is `formula`)
+- Forgetting `matchType` — this is a separate top-level parameter, not nested inside `filters`
+
+**Example — filter where "Identifier" (title) equals an expression:**
+```json
+{
+  "filterType": "manual",
+  "matchType": "anyFilter",
+  "filters": {
+    "conditions": [
+      {
+        "key": "Identifier|title",
+        "condition": "equals",
+        "titleValue": "={{ $json.email }}"
+      }
+    ]
+  }
+}
+```
+
+### Notion node v2.2 simplified output uses `property_` prefixed snake_case field names
+The Notion node v2.2 `getAll` operation (on `databasePage`) returns **simplified output** by default. The field names in this output do **not** match the Notion property display names. Instead, they follow this pattern:
+
+- **Title property** → available as both `name` (page title) and `property_<snake_case>` (e.g., `Identifier` → `property_identifier`)
+- **All other properties** → `property_` + lowercase + underscores replacing spaces (e.g., `First name` → `property_first_name`, `Company name` → `property_company_name`, `Address Line 2` → `property_address_line_2`)
+- **Page metadata** → `id`, `url`, `icon`, `cover`, `created_time`, `last_edited_time`
+
+Example: a Notion database with properties "Identifier" (title), "Email" (email), "First name" (rich_text), "Tags" (multi_select) outputs:
+```json
+{
+  "id": "19a8ebaf-15ee-812f-9be8-e3489a526b3b",
+  "name": "user@example.com",
+  "property_identifier": "user@example.com",
+  "property_email": "user@example.com",
+  "property_first_name": "Jane",
+  "property_tags": ["customer", "vip"]
+}
+```
+
+**This means**: when reading Notion getAll output in a Code node, use the `property_xxx` field names. When *writing* to Notion via `propertiesUi`, continue using the display names with types (e.g., `First name|rich_text`).
 
 ### Always verify parameter names against n8n source code
 n8n's internal parameter names often differ from what the UI labels suggest. When a node doesn't render correctly after JSON import, check the actual node source on GitHub (`packages/nodes-base/nodes/<NodeName>/`) and test fixtures for the ground truth.
