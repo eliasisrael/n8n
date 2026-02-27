@@ -258,5 +258,14 @@ When building Notion API request bodies directly (bypassing the n8n Notion node)
 
 To **omit** a property (leave it unchanged on update, or skip it on create), simply don't include it in the `properties` object. This is the key advantage over the Notion node's `propertiesUi`, which always sends everything.
 
+### n8n REST API rejects node-level `settings` on PUT/POST
+The n8n public API (`PUT /api/v1/workflows/{id}`) rejects node-level `settings` objects (e.g., `{ alwaysOutputData: true }`) as "additional properties". However, it accepts `alwaysOutputData` as a **top-level** node property. The `settings` key appears in GET responses and JSON import format but is not part of the API's write schema.
+
+Accepted top-level workflow fields: `name`, `nodes`, `connections`, `settings` (workflow-level only).
+
+Accepted node-level fields: `id`, `name`, `type`, `typeVersion`, `position`, `parameters`, `credentials`, `disabled`, `onError`, `retryOnFail`, `executeOnce`, `continueOnFail`, `alwaysOutputData`, `notesInFlow`, `notes`, `webhookId`.
+
+Rejected: `active` (use activate/deactivate endpoints), `staticData`, `meta`, `pinData`, `tags`, `versionId`, and node-level `settings`.
+
 ### Always verify parameter names against n8n source code
 n8n's internal parameter names often differ from what the UI labels suggest. When a node doesn't render correctly after JSON import, check the actual node source on GitHub (`packages/nodes-base/nodes/<NodeName>/`) and test fixtures for the ground truth.
