@@ -314,7 +314,14 @@ for (const item of $input.all()) {
   for (const [inKey, mapping] of Object.entries(fieldMap)) {
     const newVal = data.incoming[inKey];
     const oldVal = data.notion[mapping.notionKey];
-    const mergedVal = hasValue(newVal) ? newVal : (oldVal ?? null);
+
+    // For multi_select (e.g. Tags), union the arrays instead of replacing
+    let mergedVal;
+    if (mapping.apiType === 'multi_select' && Array.isArray(newVal) && Array.isArray(oldVal)) {
+      mergedVal = [...new Set([...oldVal, ...newVal])];
+    } else {
+      mergedVal = hasValue(newVal) ? newVal : (oldVal ?? null);
+    }
 
     if (!valuesEqual(mergedVal, oldVal)) changed = true;
 
