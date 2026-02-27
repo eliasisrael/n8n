@@ -22,8 +22,8 @@
  *      properties) → HTTP POST to create
  *
  * After import into n8n:
- *   - Connect the Notion credential on the Lookup Contact node and both
- *     HTTP Request nodes (Update Contact, Create Contact)
+ *   - Verify the "Eve Notion Account" credential is connected on the Lookup
+ *     Contact node and both HTTP Request nodes (Update Contact, Create Contact)
  *   - Enable "Always Output Data" on the Lookup Contact node (Settings tab)
  *     so the Merge node always receives data on both inputs
  */
@@ -34,6 +34,7 @@ import { createWorkflow, createNode, connect } from '../lib/workflow.js';
 // Configuration
 // ---------------------------------------------------------------------------
 const DATABASE_ID = '1688ebaf-15ee-806b-bd12-dd7c8caf2bdd';
+const NOTION_CREDENTIAL = { notionApi: { id: 'lOLrwKiRnGrhZ9xM', name: 'Eve Notion Account' } };
 
 // Map from incoming field names →
 //   prop:      Notion property name (used when *writing* via propertiesUi)
@@ -156,7 +157,7 @@ const lookup = createNode(
     },
     options: {},
   },
-  { position: [750, 200], typeVersion: 2.2 },
+  { position: [750, 200], typeVersion: 2.2, credentials: NOTION_CREDENTIAL },
 );
 
 // Ensure the Merge node always receives data on input 0, even when all
@@ -365,7 +366,7 @@ const update = createNode(
     jsonBody: '={{ $json.requestBody }}',
     options: {},
   },
-  { position: [1750, 200], typeVersion: 4.2 },
+  { position: [1750, 200], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
 );
 
 // ---------------------------------------------------------------------------
@@ -443,7 +444,7 @@ const create = createNode(
     jsonBody: '={{ $json.requestBody }}',
     options: {},
   },
-  { position: [1750, 400], typeVersion: 4.2 },
+  { position: [1750, 400], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
 );
 
 // ---------------------------------------------------------------------------
