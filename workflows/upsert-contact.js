@@ -16,12 +16,14 @@
  *      data under `notion`, both keyed by `Identifier` (the email)
  *   4. Merge (outer join on Identifier) so every incoming record is
  *      paired with its Notion match (if any)
- *   5. If found → merge (prefer non-null incoming values) → update
- *   6. If not found → create new record
+ *   5. If found → merge (prefer non-null incoming values) → build Notion
+ *      API request body (only non-null properties) → HTTP PATCH to update
+ *   6. If not found → build Notion API request body (only non-null
+ *      properties) → HTTP POST to create
  *
  * After import into n8n:
- *   - Connect the Notion credential on each Notion node
- *   - Verify the database is selected and property mappings look correct
+ *   - Connect the Notion credential on the Lookup Contact node and both
+ *     HTTP Request nodes (Update Contact, Create Contact)
  *   - Enable "Always Output Data" on the Lookup Contact node (Settings tab)
  *     so the Merge node always receives data on both inputs
  */
@@ -40,20 +42,36 @@ const DATABASE_ID = '1688ebaf-15ee-806b-bd12-dd7c8caf2bdd';
 // Notion v2.2 simplified output lowercases property names, replaces spaces
 // with underscores, and prepends "property_".  e.g. "First name" → "property_first_name"
 const FIELD_MAP = {
-  email:            { prop: 'Email',            notionKey: 'property_email' },
-  first_name:       { prop: 'First name',       notionKey: 'property_first_name' },
-  last_name:        { prop: 'Last name',        notionKey: 'property_last_name' },
-  company:          { prop: 'Company Name',     notionKey: 'property_company_name' },
-  email_marketing:  { prop: 'Email Marketing',  notionKey: 'property_email_marketing' },
-  tags:             { prop: 'Tags',             notionKey: 'property_tags' },
-  street_address:   { prop: 'Street Address',   notionKey: 'property_street_address' },
-  street_address_2: { prop: 'Address Line 2',   notionKey: 'property_address_line_2' },
-  city:             { prop: 'City',             notionKey: 'property_city' },
-  state:            { prop: 'State',            notionKey: 'property_state' },
-  postal_code:      { prop: 'Postal Code',      notionKey: 'property_postal_code' },
-  country:          { prop: 'Country',          notionKey: 'property_country' },
-  phone:            { prop: 'Phone',            notionKey: 'property_phone' },
+  email:            { prop: 'Email',            notionKey: 'property_email',            apiType: 'email' },
+  first_name:       { prop: 'First name',       notionKey: 'property_first_name',       apiType: 'rich_text' },
+  last_name:        { prop: 'Last name',        notionKey: 'property_last_name',        apiType: 'rich_text' },
+  company:          { prop: 'Company Name',     notionKey: 'property_company_name',     apiType: 'rich_text' },
+  email_marketing:  { prop: 'Email Marketing',  notionKey: 'property_email_marketing',  apiType: 'select' },
+  tags:             { prop: 'Tags',             notionKey: 'property_tags',             apiType: 'multi_select' },
+  street_address:   { prop: 'Street Address',   notionKey: 'property_street_address',   apiType: 'rich_text' },
+  street_address_2: { prop: 'Address Line 2',   notionKey: 'property_address_line_2',   apiType: 'rich_text' },
+  city:             { prop: 'City',             notionKey: 'property_city',             apiType: 'rich_text' },
+  state:            { prop: 'State',            notionKey: 'property_state',            apiType: 'rich_text' },
+  postal_code:      { prop: 'Postal Code',      notionKey: 'property_postal_code',      apiType: 'rich_text' },
+  country:          { prop: 'Country',          notionKey: 'property_country',          apiType: 'rich_text' },
+  phone:            { prop: 'Phone',            notionKey: 'property_phone',            apiType: 'phone_number' },
 };
+
+// Shared helper function (embedded in Code node strings) that converts a
+// value + API type into the Notion API property format.
+const TO_NOTION_PROP_FN = `
+function toNotionProp(apiType, value) {
+  switch (apiType) {
+    case 'title':        return { title: [{ text: { content: String(value) } }] };
+    case 'rich_text':    return { rich_text: [{ text: { content: String(value) } }] };
+    case 'email':        return { email: String(value) };
+    case 'phone_number': return { phone_number: String(value) };
+    case 'select':       return { select: { name: String(value) } };
+    case 'multi_select': return { multi_select: (Array.isArray(value) ? value : [value]).map(v => ({ name: String(v) })) };
+    default: throw new Error('Unknown apiType: ' + apiType);
+  }
+}
+`;
 
 // ---------------------------------------------------------------------------
 // Nodes
@@ -257,14 +275,12 @@ const ifExists = createNode(
 );
 
 // ---------------------------------------------------------------------------
-// True branch – merge incoming + existing values, then update
+// True branch – merge incoming + existing, build Notion API body, then update
 // ---------------------------------------------------------------------------
 
-const MERGE_CODE = `
-/**
- * Returns true when a value carries meaningful data (i.e. is not null,
- * undefined, empty string, or empty array).
- */
+const BUILD_UPDATE_CODE = `
+${TO_NOTION_PROP_FN}
+
 function hasValue(val) {
   if (val === null || val === undefined) return false;
   if (typeof val === 'string' && val.trim() === '') return false;
@@ -272,11 +288,6 @@ function hasValue(val) {
   return true;
 }
 
-/**
- * Returns true when two values are effectively equal.
- * Treats null, undefined, and empty string as equivalent ("no value").
- * Compares arrays by JSON serialisation (handles tags).
- */
 function valuesEqual(a, b) {
   const emptyA = !hasValue(a);
   const emptyB = !hasValue(b);
@@ -288,50 +299,48 @@ function valuesEqual(a, b) {
   return a === b;
 }
 
-// Field mapping:
-//   incoming key → { prop: Notion property name (for output), notionKey: simplified output field }
-// Notion v2.2 simplified output uses "property_" + snake_case, e.g. "First name" → "property_first_name"
 const fieldMap = ${JSON.stringify(FIELD_MAP, null, 2)};
 
-// Each input item has:
-//   - data.incoming  = original incoming contact fields
-//   - data.notion    = Notion lookup result (with property_xxx fields)
-//   - data.Identifier = the email used for matching
 const results = [];
 for (const item of $input.all()) {
   const data = item.json;
-
-  const merged = {
-    pageId: data.notion.id,
-    Identifier: data.Identifier,
-  };
-
-  // For every mapped field, prefer the incoming value when it has data;
-  // otherwise keep the existing Notion value.
-  // Track whether any field actually changed from the stored value.
+  const properties = {};
   let changed = false;
+
+  // Always include Identifier (title) — the page title / email
+  properties['Identifier'] = toNotionProp('title', data.Identifier);
+
   for (const [inKey, mapping] of Object.entries(fieldMap)) {
-    const newVal = data.incoming[inKey];              // incoming value
-    const oldVal = data.notion[mapping.notionKey];    // existing Notion value
+    const newVal = data.incoming[inKey];
+    const oldVal = data.notion[mapping.notionKey];
     const mergedVal = hasValue(newVal) ? newVal : (oldVal ?? null);
-    merged[mapping.prop] = mergedVal;
 
     if (!valuesEqual(mergedVal, oldVal)) changed = true;
+
+    // Only include non-null properties in the API request body
+    if (hasValue(mergedVal)) {
+      properties[mapping.prop] = toNotionProp(mapping.apiType, mergedVal);
+    }
   }
 
-  // Only emit records that have at least one changed field —
-  // skip the Notion update when every value is already up-to-date.
-  if (changed) results.push({ json: merged });
+  if (changed) {
+    results.push({
+      json: {
+        pageId: data.notion.id,
+        requestBody: JSON.stringify({ properties }),
+      },
+    });
+  }
 }
 
 return results;
 `.trim();
 
-const merge = createNode(
-  'Merge Records',
+const buildUpdateBody = createNode(
+  'Build Update Body',
   'n8n-nodes-base.code',
   {
-    jsCode: MERGE_CODE,
+    jsCode: BUILD_UPDATE_CODE,
     mode: 'runOnceForAllItems',
   },
   { position: [1550, 200], typeVersion: 2 },
@@ -339,107 +348,102 @@ const merge = createNode(
 
 const update = createNode(
   'Update Contact',
-  'n8n-nodes-base.notion',
+  'n8n-nodes-base.httpRequest',
   {
-    resource: 'databasePage',
-    operation: 'update',
-    pageId: {
-      __rl: true,
-      mode: 'id',
-      value: '={{ $json.pageId }}',
-    },
-    propertiesUi: {
-      propertyValues: [
-        { key: 'Identifier|title',            title:         '={{ $json.Identifier }}' },
-        { key: 'Email|email',                 emailValue:    '={{ $json.Email }}' },
-        { key: 'First name|rich_text',        richText: false, textContent: '={{ $json["First name"] }}' },
-        { key: 'Last name|rich_text',         richText: false, textContent: '={{ $json["Last name"] }}' },
-        { key: 'Company Name|rich_text',      richText: false, textContent: '={{ $json["Company Name"] }}' },
-        { key: 'Email Marketing|select',       selectValue: '={{ $json["Email Marketing"] }}' },
-        { key: 'Tags|multi_select',           multiSelectValue: '={{ ($json.Tags || []).join(", ") }}' },
-        { key: 'Street Address|rich_text',    richText: false, textContent: '={{ $json["Street Address"] }}' },
-        { key: 'Address Line 2|rich_text',    richText: false, textContent: '={{ $json["Address Line 2"] }}' },
-        { key: 'City|rich_text',              richText: false, textContent: '={{ $json.City }}' },
-        { key: 'State|rich_text',             richText: false, textContent: '={{ $json.State }}' },
-        { key: 'Postal Code|rich_text',       richText: false, textContent: '={{ $json["Postal Code"] }}' },
-        { key: 'Country|rich_text',           richText: false, textContent: '={{ $json.Country }}' },
-        { key: 'Phone|phone_number',          phoneValue:    '={{ $json.Phone }}' },
+    method: 'PATCH',
+    url: '=https://api.notion.com/v1/pages/{{ $json.pageId }}',
+    authentication: 'predefinedCredentialType',
+    nodeCredentialType: 'notionApi',
+    sendHeaders: true,
+    headerParameters: {
+      parameters: [
+        { name: 'Notion-Version', value: '2022-06-28' },
       ],
     },
+    sendBody: true,
+    specifyBody: 'json',
+    jsonBody: '={{ $json.requestBody }}',
     options: {},
   },
-  { position: [1750, 200], typeVersion: 2.2 },
+  { position: [1750, 200], typeVersion: 4.2 },
 );
 
 // ---------------------------------------------------------------------------
-// False branch – create a brand-new contact
+// False branch – build Notion API body and create a brand-new contact
 // ---------------------------------------------------------------------------
 
-// Replace null incoming values with empty strings/arrays before passing
-// them to the Notion Create node, to avoid Notion API errors.
-const REMOVE_NULLS_CODE = `
-let textFields = [
-  "email", "first_name", "last_name", "company",
-  "street_address", "street_address_2", "city", "state", "postal_code",
-  "country", "phone", "email_marketing"
-];
-let arrayFields = ["tags"];
+// Build the Notion API create request body, including only non-null fields.
+const BUILD_CREATE_CODE = `
+${TO_NOTION_PROP_FN}
 
-for (const field of textFields) {
-  if ($input.item.json.incoming[field] == null) {
-    $input.item.json.incoming[field] = "";
-  }
+function hasValue(val) {
+  if (val === null || val === undefined) return false;
+  if (typeof val === 'string' && val.trim() === '') return false;
+  if (Array.isArray(val) && val.length === 0) return false;
+  return true;
 }
-for (const field of arrayFields) {
-  if ($input.item.json.incoming[field] == null) {
-    $input.item.json.incoming[field] = [];
+
+const DATABASE_ID = '${DATABASE_ID}';
+const fieldMap = ${JSON.stringify(FIELD_MAP, null, 2)};
+
+const results = [];
+for (const item of $input.all()) {
+  const data = item.json;
+  const properties = {};
+
+  // Always include Identifier (title) — required for page creation
+  properties['Identifier'] = toNotionProp('title', data.Identifier);
+
+  for (const [inKey, mapping] of Object.entries(fieldMap)) {
+    const val = data.incoming[inKey];
+    if (hasValue(val)) {
+      properties[mapping.prop] = toNotionProp(mapping.apiType, val);
+    }
   }
+
+  results.push({
+    json: {
+      requestBody: JSON.stringify({
+        parent: { database_id: DATABASE_ID },
+        properties,
+      }),
+    },
+  });
 }
-return $input.item;
+
+return results;
 `.trim();
 
-const removeNulls = createNode(
-  'Remove Nulls',
+const buildCreateBody = createNode(
+  'Build Create Body',
   'n8n-nodes-base.code',
   {
-    mode: 'runOnceForEachItem',
-    jsCode: REMOVE_NULLS_CODE,
+    jsCode: BUILD_CREATE_CODE,
+    mode: 'runOnceForAllItems',
   },
   { position: [1550, 400], typeVersion: 2 },
 );
 
 const create = createNode(
   'Create Contact',
-  'n8n-nodes-base.notion',
+  'n8n-nodes-base.httpRequest',
   {
-    resource: 'databasePage',
-    operation: 'create',
-    databaseId: {
-      __rl: true,
-      mode: 'id',
-      value: DATABASE_ID,
-    },
-    title: '={{ $json.Identifier }}',
-    propertiesUi: {
-      propertyValues: [
-        { key: 'Email|email',                 emailValue:    '={{ $json.incoming.email }}' },
-        { key: 'First name|rich_text',        richText: false, textContent: '={{ $json.incoming.first_name || "" }}' },
-        { key: 'Last name|rich_text',         richText: false, textContent: '={{ $json.incoming.last_name || "" }}' },
-        { key: 'Company Name|rich_text',      richText: false, textContent: '={{ $json.incoming.company || "" }}' },
-        { key: 'Email Marketing|select',       selectValue: '={{ $json.incoming.email_marketing || "" }}' },
-        { key: 'Tags|multi_select',           multiSelectValue: '={{ ($json.incoming.tags || []).join(", ") }}' },
-        { key: 'Street Address|rich_text',    richText: false, textContent: '={{ $json.incoming.street_address || "" }}' },
-        { key: 'Address Line 2|rich_text',    richText: false, textContent: '={{ $json.incoming.street_address_2 || "" }}' },
-        { key: 'City|rich_text',              richText: false, textContent: '={{ $json.incoming.city || "" }}' },
-        { key: 'State|rich_text',             richText: false, textContent: '={{ $json.incoming.state || "" }}' },
-        { key: 'Postal Code|rich_text',       richText: false, textContent: '={{ $json.incoming.postal_code || "" }}' },
-        { key: 'Country|rich_text',           richText: false, textContent: '={{ $json.incoming.country || "" }}' },
-        { key: 'Phone|phone_number',          phoneValue:    '={{ $json.incoming.phone || "" }}' },
+    method: 'POST',
+    url: 'https://api.notion.com/v1/pages',
+    authentication: 'predefinedCredentialType',
+    nodeCredentialType: 'notionApi',
+    sendHeaders: true,
+    headerParameters: {
+      parameters: [
+        { name: 'Notion-Version', value: '2022-06-28' },
       ],
     },
+    sendBody: true,
+    specifyBody: 'json',
+    jsonBody: '={{ $json.requestBody }}',
     options: {},
   },
-  { position: [1750, 400], typeVersion: 2.2 },
+  { position: [1750, 400], typeVersion: 4.2 },
 );
 
 // ---------------------------------------------------------------------------
@@ -449,7 +453,7 @@ const create = createNode(
 export default createWorkflow('Notion Master Contact Upsert', {
   nodes: [
     trigger, hasEmail, lookup, markExisting, markInbound,
-    pairRecords, ifExists, merge, update, removeNulls, create,
+    pairRecords, ifExists, buildUpdateBody, update, buildCreateBody, create,
   ],
   connections: [
     connect(trigger, hasEmail),
@@ -459,10 +463,10 @@ export default createWorkflow('Notion Master Contact Upsert', {
     connect(markExisting, pairRecords, 0, 0),  // Notion data → Pair Records input 0
     connect(markInbound, pairRecords, 0, 1),   // incoming data → Pair Records input 1
     connect(pairRecords, ifExists),            // paired data → IF
-    connect(ifExists, merge, 0, 0),            // true  → Merge Records Code
-    connect(merge, update),
-    connect(ifExists, removeNulls, 1, 0),      // false → Remove Nulls
-    connect(removeNulls, create),              // cleaned data → Create Contact
+    connect(ifExists, buildUpdateBody, 0, 0),   // true  → Build Update Body
+    connect(buildUpdateBody, update),
+    connect(ifExists, buildCreateBody, 1, 0),  // false → Build Create Body
+    connect(buildCreateBody, create),          // → Create Contact (HTTP POST)
   ],
   tags: ['sub-workflow', 'contacts'],
 });

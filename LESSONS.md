@@ -220,5 +220,43 @@ No `combineBy` parameter is needed when using `fieldsToMatchString` — it impli
 ### `$('NodeName').item` vs `.first()` in n8n expressions
 In n8n expressions (NOT Code node sandbox), `$('NodeName').item.json.field` correctly references the item from the named node that corresponds to the **current item being processed** — it maintains per-item pairing through the flow. In contrast, `$('NodeName').first().json.field` always retrieves item 0 regardless of which item is being processed. Use `.item` when you need per-item pairing (e.g. in a Set node after a Notion lookup, to get the original email from Has Email?).
 
+### Notion node propertiesUi always sends ALL listed properties — use HTTP Request for dynamic bodies
+The n8n Notion node's `propertiesUi` sends **every** property listed in `propertyValues`, even when a value resolves to null, empty string, or empty array. The Notion API rejects invalid values (e.g., empty string for `phone_number`, null for `select`), causing 400 validation errors. This applies to both create and update operations.
+
+**Workaround**: Replace the Notion write nodes with **HTTP Request** nodes that call the Notion API directly. Use a Code node upstream to build the request body dynamically, **only including properties that have non-null, non-empty values**.
+
+### HTTP Request v4.2 for Notion API calls
+Use `authentication: 'predefinedCredentialType'` with `nodeCredentialType: 'notionApi'` to reuse existing Notion credentials. Key parameters:
+```json
+{
+  "method": "PATCH",
+  "url": "=https://api.notion.com/v1/pages/{{ $json.pageId }}",
+  "authentication": "predefinedCredentialType",
+  "nodeCredentialType": "notionApi",
+  "sendHeaders": true,
+  "headerParameters": { "parameters": [{ "name": "Notion-Version", "value": "2022-06-28" }] },
+  "sendBody": true,
+  "specifyBody": "json",
+  "jsonBody": "={{ $json.requestBody }}"
+}
+```
+- `typeVersion: 4.2` for the HTTP Request node
+- The `Notion-Version` header is **required** — without it, the API returns 400
+- For create: `POST https://api.notion.com/v1/pages` with `{ parent: { database_id }, properties }` in the body
+- For update: `PATCH https://api.notion.com/v1/pages/{page_id}` with `{ properties }` in the body
+
+### Notion API property format reference
+When building Notion API request bodies directly (bypassing the n8n Notion node), use these property formats:
+| Type           | Format                                                        |
+|----------------|---------------------------------------------------------------|
+| `title`        | `{ title: [{ text: { content: "value" } }] }`                |
+| `rich_text`    | `{ rich_text: [{ text: { content: "value" } }] }`            |
+| `email`        | `{ email: "value" }`                                          |
+| `phone_number` | `{ phone_number: "value" }`                                   |
+| `select`       | `{ select: { name: "value" } }`                               |
+| `multi_select` | `{ multi_select: [{ name: "v1" }, { name: "v2" }] }`         |
+
+To **omit** a property (leave it unchanged on update, or skip it on create), simply don't include it in the `properties` object. This is the key advantage over the Notion node's `propertiesUi`, which always sends everything.
+
 ### Always verify parameter names against n8n source code
 n8n's internal parameter names often differ from what the UI labels suggest. When a node doesn't render correctly after JSON import, check the actual node source on GitHub (`packages/nodes-base/nodes/<NodeName>/`) and test fixtures for the ground truth.
