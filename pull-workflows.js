@@ -14,26 +14,16 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'fs';
 import { resolve, join } from 'path';
+import loadEnv from './lib/load-env.js';
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 const ROOT = new URL('.', import.meta.url).pathname;
-const ENV_PATH = join(ROOT, '.env');
 const SERVER_DIR = join(ROOT, 'server');
 const MANIFEST_PATH = join(SERVER_DIR, '.manifest.json');
 
-function loadEnv() {
-  const text = readFileSync(ENV_PATH, 'utf8');
-  const env = {};
-  for (const line of text.split('\n')) {
-    const match = line.match(/^([A-Z0-9_]+)=(.+)$/);
-    if (match) env[match[1]] = match[2].trim();
-  }
-  return env;
-}
-
-const env = loadEnv();
+const env = loadEnv({ required: true });
 const BASE_URL = env.N8N_BASE_URL;
 const API_KEY = env.N8N_API_KEY;
 

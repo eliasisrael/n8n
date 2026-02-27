@@ -12,9 +12,16 @@
 import { readdir, mkdir, writeFile } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import loadEnv from './lib/load-env.js';
 
 const WORKFLOWS_DIR = join(process.cwd(), 'workflows');
 const OUTPUT_DIR = join(process.cwd(), 'output');
+
+// Load .env so workflow files can reference process.env.*
+// (e.g. for secrets that shouldn't be checked into the repo).
+// .env is optional — build still works without it, but workflows
+// that reference process.env will get undefined values.
+loadEnv({ setProcessEnv: true });
 
 async function buildWorkflow(filePath) {
   const mod = await import(pathToFileURL(filePath).href);

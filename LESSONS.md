@@ -267,5 +267,8 @@ Accepted node-level fields: `id`, `name`, `type`, `typeVersion`, `position`, `pa
 
 Rejected: `active` (use activate/deactivate endpoints), `staticData`, `meta`, `pinData`, `tags`, `versionId`, and node-level `settings`.
 
+### Always ask permission before pushing workflows to the server
+Never run `push-workflows.js` (or otherwise upload a workflow to the n8n server) without explicit user confirmation first. Building to `output/` is safe, but pushing to the live server can overwrite running workflows and should always be a deliberate, user-approved action.
+
 ### Always verify parameter names against n8n source code
 n8n's internal parameter names often differ from what the UI labels suggest. When a node doesn't render correctly after JSON import, check the actual node source on GitHub (`packages/nodes-base/nodes/<NodeName>/`) and test fixtures for the ground truth.
