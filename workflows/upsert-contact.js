@@ -12,14 +12,18 @@
  * Logic:
  *   1. Validate that email is present — skip record if missing
  *   2. Look up existing contact by Identifier (email) in Notion
- *   3. If found → merge (prefer non-null incoming values) → update
- *   4. If not found → create new record
+ *   3. "Mark" each stream: wrap incoming data under `incoming`, Notion
+ *      data under `notion`, both keyed by `Identifier` (the email)
+ *   4. Merge (outer join on Identifier) so every incoming record is
+ *      paired with its Notion match (if any)
+ *   5. If found → merge (prefer non-null incoming values) → update
+ *   6. If not found → create new record
  *
  * After import into n8n:
  *   - Connect the Notion credential on each Notion node
  *   - Verify the database is selected and property mappings look correct
  *   - Enable "Always Output Data" on the Lookup Contact node (Settings tab)
- *     so the IF node runs even when no matching contact is found
+ *     so the Merge node always receives data on both inputs
  */
 
 import { createWorkflow, createNode, connect } from '../lib/workflow.js';
@@ -121,10 +125,8 @@ const lookup = createNode(
       mode: 'id',
       value: DATABASE_ID,
     },
-    returnAll: false,
-    limit: 1,
+    returnAll: true,
     filterType: 'manual',
-    matchType: 'anyFilter',
     filters: {
       conditions: [
         {
@@ -134,14 +136,96 @@ const lookup = createNode(
         },
       ],
     },
+    options: {},
   },
-  { position: [750, 300], typeVersion: 2.2 },
+  { position: [750, 200], typeVersion: 2.2 },
 );
 
-// Ensure the IF node runs even when the lookup returns zero results.
+// Ensure the Merge node always receives data on input 0, even when all
+// lookups return zero results.
 lookup.settings = { alwaysOutputData: true };
+lookup.alwaysOutputData = true;
+
+// ---------------------------------------------------------------------------
+// Mark each stream with a common Identifier key for field-based merging
+// ---------------------------------------------------------------------------
+
+// "Mark Existing" wraps the Notion lookup result under `notion` and tags
+// the item with the email from the paired Has Email? output item.
+// $('Has Email?').item correctly follows per-item pairing in expressions.
+const markExisting = createNode(
+  'Mark Existing',
+  'n8n-nodes-base.set',
+  {
+    assignments: {
+      assignments: [
+        {
+          id: crypto.randomUUID(),
+          name: 'notion',
+          value: '={{ $json }}',
+          type: 'object',
+        },
+        {
+          id: crypto.randomUUID(),
+          name: 'Identifier',
+          value: "={{ $('Has Email?').item.json.email }}",
+          type: 'string',
+        },
+      ],
+    },
+    options: {},
+  },
+  { position: [950, 200], typeVersion: 3.4 },
+);
+
+// "Mark Inbound" wraps the original incoming data under `incoming` and
+// extracts the email as `Identifier` (same field name as Mark Existing).
+const markInbound = createNode(
+  'Mark Inbound',
+  'n8n-nodes-base.set',
+  {
+    assignments: {
+      assignments: [
+        {
+          id: crypto.randomUUID(),
+          name: 'incoming',
+          value: '={{ $json }}',
+          type: 'object',
+        },
+        {
+          id: crypto.randomUUID(),
+          name: 'Identifier',
+          value: '={{ $json.email }}',
+          type: 'string',
+        },
+      ],
+    },
+    options: {},
+  },
+  { position: [950, 400], typeVersion: 3.4 },
+);
+
+// ---------------------------------------------------------------------------
+// Merge by Identifier (outer join) — pairs incoming data with Notion record
+// ---------------------------------------------------------------------------
+// Uses fieldsToMatchString to join on the shared Identifier field.
+// joinMode "keepEverything" ensures that incoming records with no Notion
+// match still pass through (they'll have `incoming` but no `notion`).
+const pairRecords = createNode(
+  'Pair Records',
+  'n8n-nodes-base.merge',
+  {
+    mode: 'combine',
+    fieldsToMatchString: 'Identifier',
+    joinMode: 'keepEverything',
+    options: {},
+  },
+  { position: [1150, 300], typeVersion: 3 },
+);
 
 // Branch: does a matching contact already exist?
+// Items with a `notion` object were found in the database.
+// Items without one are new contacts.
 const ifExists = createNode(
   'Contact Exists?',
   'n8n-nodes-base.if',
@@ -151,15 +235,16 @@ const ifExists = createNode(
         caseSensitive: true,
         leftValue: '',
         typeValidation: 'strict',
+        version: 1,
       },
       conditions: [
         {
           id: crypto.randomUUID(),
-          leftValue: '={{ $json.id }}',
+          leftValue: '={{ $json.notion}}',
           rightValue: '',
           operator: {
-            type: 'string',
-            operation: 'exists',
+            type: 'object',
+            operation: 'notEmpty',
             singleValue: true,
           },
         },
@@ -168,37 +253,12 @@ const ifExists = createNode(
     },
     options: {},
   },
-  { position: [1000, 300], typeVersion: 2 },
+  { position: [1350, 300], typeVersion: 2 },
 );
 
 // ---------------------------------------------------------------------------
-// True branch – pair incoming data with Notion record, merge, then update
+// True branch – merge incoming + existing values, then update
 // ---------------------------------------------------------------------------
-
-// The Merge node combines the Notion lookup result (input 0, from IF TRUE)
-// with the original incoming data (input 1, from Has Email?) by position.
-// This gives the Code node a single item containing BOTH sets of fields:
-//   - Notion fields:   id, name, property_email, property_first_name, …
-//   - Incoming fields:  email, first_name, last_name, …
-// No $('NodeName') back-references needed.
-const pairRecords = createNode(
-  'Pair Records',
-  'n8n-nodes-base.merge',
-  {
-    mode: 'combine',
-    combineBy: 'combineByPosition',
-    options: {
-      clashHandling: {
-        values: {
-          resolveClash: 'preferLast',
-          mergeMode: 'shallowMerge',
-          overrideEmpty: false,
-        },
-      },
-    },
-  },
-  { position: [1200, 150], typeVersion: 3 },
-);
 
 const MERGE_CODE = `
 /**
@@ -233,16 +293,17 @@ function valuesEqual(a, b) {
 // Notion v2.2 simplified output uses "property_" + snake_case, e.g. "First name" → "property_first_name"
 const fieldMap = ${JSON.stringify(FIELD_MAP, null, 2)};
 
-// Each input item already contains BOTH the Notion record fields (property_xxx)
-// and the incoming contact fields (email, first_name, etc.) — merged by the
-// upstream "Pair Records" node.
+// Each input item has:
+//   - data.incoming  = original incoming contact fields
+//   - data.notion    = Notion lookup result (with property_xxx fields)
+//   - data.Identifier = the email used for matching
 const results = [];
 for (const item of $input.all()) {
   const data = item.json;
 
   const merged = {
-    pageId: data.id,
-    Identifier: data.email,
+    pageId: data.notion.id,
+    Identifier: data.Identifier,
   };
 
   // For every mapped field, prefer the incoming value when it has data;
@@ -250,8 +311,8 @@ for (const item of $input.all()) {
   // Track whether any field actually changed from the stored value.
   let changed = false;
   for (const [inKey, mapping] of Object.entries(fieldMap)) {
-    const newVal = data[inKey];              // incoming value
-    const oldVal = data[mapping.notionKey];  // existing Notion value
+    const newVal = data.incoming[inKey];              // incoming value
+    const oldVal = data.notion[mapping.notionKey];    // existing Notion value
     const mergedVal = hasValue(newVal) ? newVal : (oldVal ?? null);
     merged[mapping.prop] = mergedVal;
 
@@ -273,7 +334,7 @@ const merge = createNode(
     jsCode: MERGE_CODE,
     mode: 'runOnceForAllItems',
   },
-  { position: [1450, 150], typeVersion: 2 },
+  { position: [1550, 200], typeVersion: 2 },
 );
 
 const update = createNode(
@@ -305,16 +366,47 @@ const update = createNode(
         { key: 'Phone|phone_number',          phoneValue:    '={{ $json.Phone }}' },
       ],
     },
+    options: {},
   },
-  { position: [1700, 150], typeVersion: 2.2 },
+  { position: [1750, 200], typeVersion: 2.2 },
 );
 
 // ---------------------------------------------------------------------------
 // False branch – create a brand-new contact
 // ---------------------------------------------------------------------------
 
-// Helper: expression that references a field on the trigger output
-const src = (field) => `={{ $('Receive Contact').first().json.${field} }}`;
+// Replace null incoming values with empty strings/arrays before passing
+// them to the Notion Create node, to avoid Notion API errors.
+const REMOVE_NULLS_CODE = `
+let textFields = [
+  "email", "first_name", "last_name", "company",
+  "street_address", "street_address_2", "city", "state", "postal_code",
+  "country", "phone", "email_marketing"
+];
+let arrayFields = ["tags"];
+
+for (const field of textFields) {
+  if ($input.item.json.incoming[field] == null) {
+    $input.item.json.incoming[field] = "";
+  }
+}
+for (const field of arrayFields) {
+  if ($input.item.json.incoming[field] == null) {
+    $input.item.json.incoming[field] = [];
+  }
+}
+return $input.item;
+`.trim();
+
+const removeNulls = createNode(
+  'Remove Nulls',
+  'n8n-nodes-base.code',
+  {
+    mode: 'runOnceForEachItem',
+    jsCode: REMOVE_NULLS_CODE,
+  },
+  { position: [1550, 400], typeVersion: 2 },
+);
 
 const create = createNode(
   'Create Contact',
@@ -327,26 +419,27 @@ const create = createNode(
       mode: 'id',
       value: DATABASE_ID,
     },
-    title: src('email'),
+    title: '={{ $json.Identifier }}',
     propertiesUi: {
       propertyValues: [
-        { key: 'Email|email',                 emailValue:    src('email') },
-        { key: 'First name|rich_text',        richText: false, textContent: src('first_name') },
-        { key: 'Last name|rich_text',         richText: false, textContent: src('last_name') },
-        { key: 'Company Name|rich_text',      richText: false, textContent: src('company') },
-        { key: 'Email Marketing|select',       selectValue: src('email_marketing') },
-        { key: 'Tags|multi_select',           multiSelectValue: `={{ ($('Receive Contact').first().json.tags || []).join(', ') }}` },
-        { key: 'Street Address|rich_text',    richText: false, textContent: src('street_address') },
-        { key: 'Address Line 2|rich_text',    richText: false, textContent: src('street_address_2') },
-        { key: 'City|rich_text',              richText: false, textContent: src('city') },
-        { key: 'State|rich_text',             richText: false, textContent: src('state') },
-        { key: 'Postal Code|rich_text',       richText: false, textContent: src('postal_code') },
-        { key: 'Country|rich_text',           richText: false, textContent: src('country') },
-        { key: 'Phone|phone_number',          phoneValue:    src('phone') },
+        { key: 'Email|email',                 emailValue:    '={{ $json.incoming.email }}' },
+        { key: 'First name|rich_text',        richText: false, textContent: '={{ $json.incoming.first_name || "" }}' },
+        { key: 'Last name|rich_text',         richText: false, textContent: '={{ $json.incoming.last_name || "" }}' },
+        { key: 'Company Name|rich_text',      richText: false, textContent: '={{ $json.incoming.company || "" }}' },
+        { key: 'Email Marketing|select',       selectValue: '={{ $json.incoming.email_marketing || "" }}' },
+        { key: 'Tags|multi_select',           multiSelectValue: '={{ ($json.incoming.tags || []).join(", ") }}' },
+        { key: 'Street Address|rich_text',    richText: false, textContent: '={{ $json.incoming.street_address || "" }}' },
+        { key: 'Address Line 2|rich_text',    richText: false, textContent: '={{ $json.incoming.street_address_2 || "" }}' },
+        { key: 'City|rich_text',              richText: false, textContent: '={{ $json.incoming.city || "" }}' },
+        { key: 'State|rich_text',             richText: false, textContent: '={{ $json.incoming.state || "" }}' },
+        { key: 'Postal Code|rich_text',       richText: false, textContent: '={{ $json.incoming.postal_code || "" }}' },
+        { key: 'Country|rich_text',           richText: false, textContent: '={{ $json.incoming.country || "" }}' },
+        { key: 'Phone|phone_number',          phoneValue:    '={{ $json.incoming.phone || "" }}' },
       ],
     },
+    options: {},
   },
-  { position: [1250, 450], typeVersion: 2.2 },
+  { position: [1750, 400], typeVersion: 2.2 },
 );
 
 // ---------------------------------------------------------------------------
@@ -354,16 +447,22 @@ const create = createNode(
 // ---------------------------------------------------------------------------
 
 export default createWorkflow('Notion Master Contact Upsert', {
-  nodes: [trigger, hasEmail, lookup, ifExists, pairRecords, merge, update, create],
+  nodes: [
+    trigger, hasEmail, lookup, markExisting, markInbound,
+    pairRecords, ifExists, merge, update, removeNulls, create,
+  ],
   connections: [
     connect(trigger, hasEmail),
     connect(hasEmail, lookup),              // passes through only if email is present
-    connect(hasEmail, pairRecords, 0, 1),   // also send original data → Pair Records input 1
-    connect(lookup, ifExists),
-    connect(ifExists, pairRecords, 0, 0),   // true  → Pair Records input 0 (Notion data)
-    connect(pairRecords, merge),             // paired data → Code node
+    connect(hasEmail, markInbound),         // also wrap original data as { incoming, Identifier }
+    connect(lookup, markExisting),          // wrap Notion result as { notion, Identifier }
+    connect(markExisting, pairRecords, 0, 0),  // Notion data → Pair Records input 0
+    connect(markInbound, pairRecords, 0, 1),   // incoming data → Pair Records input 1
+    connect(pairRecords, ifExists),            // paired data → IF
+    connect(ifExists, merge, 0, 0),            // true  → Merge Records Code
     connect(merge, update),
-    connect(ifExists, create, 1, 0),         // false → create
+    connect(ifExists, removeNulls, 1, 0),      // false → Remove Nulls
+    connect(removeNulls, create),              // cleaned data → Create Contact
   ],
   tags: ['sub-workflow', 'contacts'],
 });

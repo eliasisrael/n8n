@@ -187,5 +187,38 @@ When a date property is included in `propertiesUi.propertyValues` (create or upd
 
 There is no way to conditionally skip a field in `propertiesUi` — all listed properties are always sent. **Workaround**: either (a) remove the date field from `propertiesUi` entirely and handle it via a separate conditional path (Filter → dedicated Update node), or (b) don't include the date field if it's not always populated.
 
+### Notion getAll drops items when no match is found
+The Notion `getAll` node silently drops input items whose filter returns zero results. The `alwaysOutputData` setting only emits one empty item when the **entire node** produces zero output — it does NOT create a placeholder per dropped input item. This means positional alignment with the original data stream is destroyed when some lookups succeed and some fail.
+
+### Use Set nodes + field-based Merge for reliable multi-item data pairing
+When pairing data from two streams (e.g. original incoming data with Notion lookup results), `combineByPosition` breaks if either stream drops or reorders items. The reliable pattern is:
+
+1. **Set nodes** ("Mark Inbound" / "Mark Existing") wrap each stream's data under a unique key (`incoming`, `notion`) and add a shared join field (`Identifier`)
+2. **Merge v3** with `fieldsToMatchString` + `joinMode: 'keepEverything'` (outer join) pairs items by the shared field — items without a match still pass through
+
+Merge v3 field-based matching parameters:
+```json
+{ "mode": "combine", "fieldsToMatchString": "Identifier", "joinMode": "keepEverything", "options": {} }
+```
+No `combineBy` parameter is needed when using `fieldsToMatchString` — it implicitly selects field-matching mode.
+
+`joinMode` values: `keepMatches` (inner), `keepNonMatches` (anti), `enrichInput1` (left), `enrichInput2` (right), `keepEverything` (outer)
+
+### Set node v3.4 parameter structure
+```json
+{
+  "assignments": {
+    "assignments": [
+      { "id": "<uuid>", "name": "fieldName", "value": "={{ $json }}", "type": "object" },
+      { "id": "<uuid>", "name": "Identifier", "value": "={{ $json.email }}", "type": "string" }
+    ]
+  },
+  "options": {}
+}
+```
+
+### `$('NodeName').item` vs `.first()` in n8n expressions
+In n8n expressions (NOT Code node sandbox), `$('NodeName').item.json.field` correctly references the item from the named node that corresponds to the **current item being processed** — it maintains per-item pairing through the flow. In contrast, `$('NodeName').first().json.field` always retrieves item 0 regardless of which item is being processed. Use `.item` when you need per-item pairing (e.g. in a Set node after a Notion lookup, to get the original email from Has Email?).
+
 ### Always verify parameter names against n8n source code
 n8n's internal parameter names often differ from what the UI labels suggest. When a node doesn't render correctly after JSON import, check the actual node source on GitHub (`packages/nodes-base/nodes/<NodeName>/`) and test fixtures for the ground truth.
