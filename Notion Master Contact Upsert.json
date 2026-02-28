@@ -1,0 +1,573 @@
+{
+  "name": "Notion Master Contact Upsert",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "jsonExample",
+        "jsonExample": "{\n  \"email\": \"user@example.com\",\n  \"first_name\": \"Jane\",\n  \"last_name\": \"Doe\",\n  \"company\": \"Acme Inc\",\n  \"email_marketing\": \"subscribed\",\n  \"tags\": [\n    \"customer\",\n    \"vip\"\n  ],\n  \"street_address\": \"123 Main St\",\n  \"street_address_2\": \"Suite 100\",\n  \"city\": \"Springfield\",\n  \"state\": \"IL\",\n  \"postal_code\": \"62701\",\n  \"country\": \"US\",\n  \"phone\": \"+1-555-123-4567\"\n}"
+      },
+      "id": "9e7733ae-dacc-438a-9233-45adb6ebbc60",
+      "name": "Receive Contact",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -2016,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "4bd4cb97-19fa-41bc-a5b4-ab2d53ba4a71",
+              "leftValue": "={{ $json.email }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1ffefc17-d530-48ea-ae6a-68c517647dcd",
+      "name": "Has Email?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [
+        -1792,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "getAll",
+        "databaseId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1688ebaf-15ee-806b-bd12-dd7c8caf2bdd"
+        },
+        "returnAll": true,
+        "filterType": "manual",
+        "filters": {
+          "conditions": [
+            {
+              "key": "Identifier|title",
+              "condition": "equals",
+              "titleValue": "={{ $json.email }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "e1cb234d-b0ee-4fbd-8c63-2e87ab7502b9",
+      "name": "Lookup Contact",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [
+        -1568,
+        208
+      ],
+      "settings": {
+        "alwaysOutputData": true
+      },
+      "alwaysOutputData": true,
+      "credentials": {
+        "notionApi": {
+          "id": "lOLrwKiRnGrhZ9xM",
+          "name": "Eve Notion Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "686b128b-2224-4e1c-86c3-1fd03ff95898",
+              "leftValue": "={{ $json.notion}}",
+              "rightValue": "",
+              "operator": {
+                "type": "object",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2498d513-3f20-49f4-9718-f064f3b5b7ba",
+      "name": "Contact Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -896,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "fieldsToMatchString": "Identifier",
+        "joinMode": "keepEverything",
+        "options": {}
+      },
+      "id": "5bc41519-ed21-49e0-992b-5235df31a176",
+      "name": "Pair Records",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        -1120,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * Returns true when a value carries meaningful data (i.e. is not null,\n * undefined, empty string, or empty array).\n */\nfunction hasValue(val) {\n  if (val === null || val === undefined) return false;\n  if (typeof val === 'string' && val.trim() === '') return false;\n  if (Array.isArray(val) && val.length === 0) return false;\n  return true;\n}\n\n/**\n * Returns true when two values are effectively equal.\n * Treats null, undefined, and empty string as equivalent (\"no value\").\n * Compares arrays by JSON serialisation (handles tags).\n */\nfunction valuesEqual(a, b) {\n  const emptyA = !hasValue(a);\n  const emptyB = !hasValue(b);\n  if (emptyA && emptyB) return true;\n  if (emptyA !== emptyB) return false;\n  if (Array.isArray(a) && Array.isArray(b)) {\n    return JSON.stringify(a) === JSON.stringify(b);\n  }\n  return a === b;\n}\n\n// Field mapping:\n//   incoming key → { prop: Notion property name (for output), notionKey: simplified output field }\n// Notion v2.2 simplified output uses \"property_\" + snake_case, e.g. \"First name\" → \"property_first_name\"\nconst fieldMap = {\n  \"email\": {\n    \"prop\": \"Email\",\n    \"notionKey\": \"property_email\"\n  },\n  \"first_name\": {\n    \"prop\": \"First name\",\n    \"notionKey\": \"property_first_name\"\n  },\n  \"last_name\": {\n    \"prop\": \"Last name\",\n    \"notionKey\": \"property_last_name\"\n  },\n  \"company\": {\n    \"prop\": \"Company Name\",\n    \"notionKey\": \"property_company_name\"\n  },\n  \"email_marketing\": {\n    \"prop\": \"Email Marketing\",\n    \"notionKey\": \"property_email_marketing\"\n  },\n  \"tags\": {\n    \"prop\": \"Tags\",\n    \"notionKey\": \"property_tags\"\n  },\n  \"street_address\": {\n    \"prop\": \"Street Address\",\n    \"notionKey\": \"property_street_address\"\n  },\n  \"street_address_2\": {\n    \"prop\": \"Address Line 2\",\n    \"notionKey\": \"property_address_line_2\"\n  },\n  \"city\": {\n    \"prop\": \"City\",\n    \"notionKey\": \"property_city\"\n  },\n  \"state\": {\n    \"prop\": \"State\",\n    \"notionKey\": \"property_state\"\n  },\n  \"postal_code\": {\n    \"prop\": \"Postal Code\",\n    \"notionKey\": \"property_postal_code\"\n  },\n  \"country\": {\n    \"prop\": \"Country\",\n    \"notionKey\": \"property_country\"\n  },\n  \"phone\": {\n    \"prop\": \"Phone\",\n    \"notionKey\": \"property_phone\"\n  }\n};\n\n// Each input item already contains BOTH the Notion record fields (property_xxx)\n// and the incoming contact fields (email, first_name, etc.) — merged by the\n// upstream \"Pair Records\" node.\nconst results = [];\nfor (const item of $input.all()) {\n  const data = item.json;\n\n  const merged = {\n    pageId: data.notion.id,\n    Identifier: data.Identifier,\n  };\n\n  // For every mapped field, prefer the incoming value when it has data;\n  // otherwise keep the existing Notion value.\n  // Track whether any field actually changed from the stored value.\n  let changed = false;\n  for (const [inKey, mapping] of Object.entries(fieldMap)) {\n    const newVal = data.incoming[inKey];              // incoming value\n    const oldVal = data.notion[mapping.notionKey];  // existing Notion value\n    const mergedVal = hasValue(newVal) ? newVal : (oldVal ?? null);\n    merged[mapping.prop] = mergedVal;\n\n    if (!valuesEqual(mergedVal, oldVal)) changed = true;\n  }\n\n  // Only emit records that have at least one changed field —\n  // skip the Notion update when every value is already up-to-date.\n  if (changed) results.push({ json: merged });\n}\n\nreturn results;"
+      },
+      "id": "e034eaa2-7130-4f3f-a97d-4d835617725c",
+      "name": "Merge Records",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -464,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "update",
+        "pageId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.pageId }}"
+        },
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "Identifier|title",
+              "title": "={{ $json.Identifier }}"
+            },
+            {
+              "key": "Email|email",
+              "emailValue": "={{ $json.Email }}"
+            },
+            {
+              "key": "First name|rich_text",
+              "textContent": "={{ $json[\"First name\"] }}"
+            },
+            {
+              "key": "Last name|rich_text",
+              "textContent": "={{ $json[\"Last name\"] }}"
+            },
+            {
+              "key": "Company Name|rich_text",
+              "textContent": "={{ $json[\"Company Name\"] }}"
+            },
+            {
+              "key": "Email Marketing|select",
+              "selectValue": "={{ $json[\"Email Marketing\"] }}"
+            },
+            {
+              "key": "Tags|multi_select",
+              "multiSelectValue": "={{ ($json.Tags || []).join(\", \") }}"
+            },
+            {
+              "key": "Street Address|rich_text",
+              "textContent": "={{ $json[\"Street Address\"] }}"
+            },
+            {
+              "key": "Address Line 2|rich_text",
+              "textContent": "={{ $json[\"Address Line 2\"] }}"
+            },
+            {
+              "key": "City|rich_text",
+              "textContent": "={{ $json.City }}"
+            },
+            {
+              "key": "State|rich_text",
+              "textContent": "={{ $json.State }}"
+            },
+            {
+              "key": "Postal Code|rich_text",
+              "textContent": "={{ $json[\"Postal Code\"] }}"
+            },
+            {
+              "key": "Country|rich_text",
+              "textContent": "={{ $json.Country }}"
+            },
+            {
+              "key": "Phone|phone_number",
+              "phoneValue": "={{ $json.Phone }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "f7112feb-d109-4614-962e-1cd3fd6e09da",
+      "name": "Update Contact",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [
+        -240,
+        208
+      ],
+      "credentials": {
+        "notionApi": {
+          "id": "lOLrwKiRnGrhZ9xM",
+          "name": "Eve Notion Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "databaseId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1688ebaf-15ee-806b-bd12-dd7c8caf2bdd"
+        },
+        "title": "={{ $json.Identifier }}",
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "Email|email",
+              "emailValue": "={{ $json.incoming.email }}"
+            },
+            {
+              "key": "First name|rich_text",
+              "textContent": "={{ $json.incoming.first_name || \"\" }}"
+            },
+            {
+              "key": "Last name|rich_text",
+              "textContent": "={{ $json.incoming.last_name }}"
+            },
+            {
+              "key": "Company Name|rich_text",
+              "textContent": "={{ $json.incoming.company || \"\" }}"
+            },
+            {
+              "key": "Email Marketing|select",
+              "selectValue": "={{ $json.incoming.email_marketing || \"\" }}"
+            },
+            {
+              "key": "Tags|multi_select",
+              "multiSelectValue": "={{ ($json.tags || []).join(\", \") }}"
+            },
+            {
+              "key": "Street Address|rich_text",
+              "textContent": "={{ $json.incoming.street_address || \"\" }}"
+            },
+            {
+              "key": "Address Line 2|rich_text",
+              "textContent": "={{ $json.incoming.street_address_2 || \"\" }}"
+            },
+            {
+              "key": "City|rich_text",
+              "textContent": "={{ $json.incoming.city || \"\" }}"
+            },
+            {
+              "key": "State|rich_text",
+              "textContent": "={{ $json.incoming.state || \"\"}}"
+            },
+            {
+              "key": "Postal Code|rich_text",
+              "textContent": "={{ $json.incoming.postal_code || \"\"}}"
+            },
+            {
+              "key": "Country|rich_text",
+              "textContent": "={{ $json.incoming.country || \"\" }}"
+            },
+            {
+              "key": "Phone|phone_number",
+              "phoneValue": "={{ $json.incoming.phone || \"\" }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "8af34770-87d1-4ab5-96f0-346c721eaec2",
+      "name": "Create Contact",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [
+        -464,
+        400
+      ],
+      "credentials": {
+        "notionApi": {
+          "id": "lOLrwKiRnGrhZ9xM",
+          "name": "Eve Notion Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e8f67917-9fc7-43ed-9f5d-d2a3c3994ef8",
+              "name": "incoming",
+              "value": "={{ $json }}",
+              "type": "object"
+            },
+            {
+              "id": "d1e482d1-8f92-4b73-b605-8a9c603c1ab1",
+              "name": "Identifier",
+              "value": "={{ $json.email }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1344,
+        400
+      ],
+      "id": "77f9e2c9-0c04-480f-b2d4-ff3deda36c35",
+      "name": "Mark Inbound"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "1fce3668-4f21-470e-8ec7-d74a46c56ec6",
+              "name": "notion",
+              "value": "={{ $json }}",
+              "type": "object"
+            },
+            {
+              "id": "98163e60-980a-4ff2-ba3f-7fb587a85105",
+              "name": "Identifier",
+              "value": "={{ $('Has Email?').item.json.email }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1344,
+        208
+      ],
+      "id": "cadea49f-6f25-4fef-86cc-6f7ff8c6a784",
+      "name": "Mark Existing"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Add a new field called 'myNewField' to the JSON of the item\nlet textFields = [\n  \"email\", \"first_name\", \"last_name\", \"company\",\n  \"street_address\", \"street_address_2\", \"city\", \"state\", \"postal_code\",\n  \"country\", \"phone\", \"email_marketing\"\n];\n\nlet arrayFields = [ \"tags\" ]\n\nfor (const field of textFields) {\n  if ($input.item.json.incoming[field] == null) {\n    $input.item.json.incoming[field] = \"\";\n  }\n}\n\nfor (const field of arrayFields) {\n  if ($input.item.json.incoming[field] == null) {\n    $input.item.json.incoming[field] = [];\n  }\n}\n\nreturn $input.item;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -688,
+        400
+      ],
+      "id": "d10477f5-9fc3-4a0b-9a88-d52b7edaa1ac",
+      "name": "Remove Nulls"
+    }
+  ],
+  "pinData": {
+    "Receive Contact": [
+      {
+        "json": {
+          "email": "eli+notsofast@eliasisrael.com",
+          "first_name": null,
+          "last_name": null,
+          "company": null,
+          "email_marketing": null,
+          "tags": null,
+          "street_address": null,
+          "street_address_2": null,
+          "city": "Coppell",
+          "state": "Texas",
+          "postal_code": null,
+          "country": null,
+          "phone": null,
+          "birthday": null
+        }
+      },
+      {
+        "json": {
+          "email": "eli@eliasisrael.com",
+          "first_name": null,
+          "last_name": null,
+          "company": null,
+          "email_marketing": null,
+          "tags": null,
+          "street_address": null,
+          "street_address_2": null,
+          "city": "Coppell",
+          "state": "Texas",
+          "postal_code": null,
+          "country": null,
+          "phone": null,
+          "birthday": null
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Receive Contact": {
+      "main": [
+        [
+          {
+            "node": "Has Email?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Email?": {
+      "main": [
+        [
+          {
+            "node": "Lookup Contact",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Mark Inbound",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Contact": {
+      "main": [
+        [
+          {
+            "node": "Mark Existing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pair Records": {
+      "main": [
+        [
+          {
+            "node": "Contact Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Contact Exists?": {
+      "main": [
+        [
+          {
+            "node": "Merge Records",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Remove Nulls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Records": {
+      "main": [
+        [
+          {
+            "node": "Update Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Inbound": {
+      "main": [
+        [
+          {
+            "node": "Pair Records",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Mark Existing": {
+      "main": [
+        [
+          {
+            "node": "Pair Records",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remove Nulls": {
+      "main": [
+        [
+          {
+            "node": "Create Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "7a1817a5-9884-4c36-83c9-af5c0eeb6a52",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "870e46b4268a8bcc16d4b630aae52938c235dfc2065fd9f324834edddab53e18"
+  },
+  "id": "EnwxsZaLNrYqKBDa",
+  "tags": [
+    {
+      "name": "sub-workflow",
+      "id": "7LpjeXA0xgZlRKeR",
+      "updatedAt": "2026-02-25T23:53:41.528Z",
+      "createdAt": "2026-02-25T23:53:41.528Z"
+    },
+    {
+      "name": "contacts",
+      "id": "UXF8aSeNeuMX8WI9",
+      "updatedAt": "2026-02-25T23:53:41.542Z",
+      "createdAt": "2026-02-25T23:53:41.542Z"
+    }
+  ]
+}

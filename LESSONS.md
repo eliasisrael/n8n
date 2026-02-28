@@ -272,3 +272,12 @@ Never run `push-workflows.js` (or otherwise upload a workflow to the n8n server)
 
 ### Always verify parameter names against n8n source code
 n8n's internal parameter names often differ from what the UI labels suggest. When a node doesn't render correctly after JSON import, check the actual node source on GitHub (`packages/nodes-base/nodes/<NodeName>/`) and test fixtures for the ground truth.
+
+### Mailchimp audience webhooks use form-encoded POST, not JSON
+Mailchimp sends audience webhook events as `application/x-www-form-urlencoded` with bracket notation (`data[merges][FNAME]=John`). **n8n does NOT parse bracket notation into nested objects** — the body retains flat keys like `$json.body["data[email]"]` and `$json.body["data[merges][FNAME]"]`. Query parameters are at `$json.query`. Use `body["data[merges][FNAME]"]` bracket access in Code nodes to read fields. ADDRESS sub-fields also stay flat: `data[merges][ADDRESS][addr1]`, `data[merges][ADDRESS][city]`, etc. — not a nested ADDRESS object.
+
+### Mailchimp webhook URL validation requires GET handling
+When you add or edit a webhook URL in Mailchimp, it sends a GET request to validate the URL returns HTTP 200. Use a separate GET webhook node on the same path with `responseMode: 'onReceived'` to handle this. The GET and POST webhook nodes need different `webhookId` values but share the same `path`.
+
+### Mailchimp cleaned and upemail events have minimal payloads
+The `cleaned` event only reliably includes `data.email` and `data.reason` — no merge fields. The `upemail` event only includes `data.old_email`, `data.new_email`, and `data.new_id`. Don't assume merge fields are present for these event types.
