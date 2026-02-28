@@ -40,6 +40,9 @@ The workflow JSON must include `staticData: null`, `pinData: {}`, `meta: { templ
 ### Use Filter nodes instead of IF nodes for simple validation gates
 When you only need to drop records that fail a check (no logic needed on the failing branch), use a Filter node. An IF node with an empty false branch is wasteful.
 
+### Use IF nodes to skip expensive operations when the pipeline is empty
+When a workflow branch may produce zero items (e.g., all items filtered out), use an IF node to check for a sentinel value (like `_empty: true`) and bypass expensive operations (API calls, LLM invocations) on the false branch. This is cheaper and faster than sending dummy requests to external APIs. Pattern: Code node returns `{ _empty: true }` when empty → IF node checks `_empty notEquals true` → true branch proceeds normally, false branch skips directly to the next convergence point.
+
 ### Notion node `databaseId` and `pageId` use the resource locator pattern
 The Notion node v2 (typeVersion 2.2) defines `databaseId` and `pageId` as `resourceLocator` type parameters. A plain string value (e.g., `"databaseId": "abc123"`) is silently ignored on import — the database/page appears blank in the UI.
 
@@ -281,3 +284,55 @@ When you add or edit a webhook URL in Mailchimp, it sends a GET request to valid
 
 ### Mailchimp cleaned and upemail events have minimal payloads
 The `cleaned` event only reliably includes `data.email` and `data.reason` — no merge fields. The `upemail` event only includes `data.old_email`, `data.new_email`, and `data.new_id`. Don't assume merge fields are present for these event types.
+
+## LangChain / AI Nodes
+
+### Basic LLM Chain (`chainLlm` v1.7) parameter structure
+Use `promptType: "define"` with `text` containing the prompt (supports expressions like `={{ $json.prompt }}`). Set `hasOutputParser: false` when you don't need structured output parsing (the chain returns raw text in `$json.text`). Include `batching: {}` as an empty object. The node type is `@n8n/n8n-nodes-langchain.chainLlm`.
+
+### Anthropic Chat Model (`lmChatAnthropic`) sub-node wiring
+The model node connects to the chain via `ai_languageModel` connection type, not `main`:
+```js
+connect(modelNode, chainNode, 0, 0, 'ai_languageModel')
+```
+The `model` parameter is a **plain string** (e.g., `'claude-sonnet-4-6-20250514'`), NOT the resource locator `{ __rl: true, ... }` pattern that `lmChatOpenAi` uses. Using an object causes `"this.model.includes is not a function"` at runtime. Include `options: {}`. Node type: `@n8n/n8n-nodes-langchain.lmChatAnthropic`.
+
+### LLM output pairing with Merge nodes
+LLM chain nodes replace the input data with output (the chain's response text). To pair the LLM response with the original input data, use a pattern of: (1) Code node that builds the prompt AND stores original items in `itemsJson`, (2) Chain node processes prompt, (3) Merge (combineByPosition) pairs chain output (input 0) with the Code node's output (input 1), (4) another Code node parses the LLM JSON and merges it back into the original items.
+
+### convertToFile v1.1 strips JSON properties
+The `convertToFile` node (operation `toText`) strips all original JSON properties from the output item — it returns `json: {}` with only `binary: { data: ... }`. This means downstream expressions like `{{ $json.someField }}` won't work after a `convertToFile` node.
+
+**Workaround**: Use inline expressions that don't depend on JSON from earlier nodes. For example, use `{{ DateTime.now().toFormat("yyyy-MM-dd") }}` instead of `{{ $json.dateStr }}` in the Dropbox upload path.
+
+**Do NOT manually handle binary data in Code nodes** using `Buffer.from(item.binary[key].data, 'base64')`. n8n's internal binary storage may use file-backed storage rather than inline base64, so `.data` is not guaranteed to be a raw base64 string. **To read binary**: use `await this.helpers.getBinaryDataBuffer(itemIndex, binaryPropertyName)` which returns a proper Buffer regardless of storage backend. **To create binary**: use the `convertToFile` node — never construct binary objects manually in Code nodes.
+
+Valid `options` for `toText` operation: `fileName`, `encoding`, `addBOM`. The `mimeType` option does NOT exist — omit it.
+
+### convertToFile operations — use `csv` for CSV output, not `spreadsheet`
+The `convertToFile` node (v1.1) has separate operations for different formats. For CSV output, use `operation: 'csv'`. The `spreadsheet` operation is for Excel/ODS formats and requires a `fileFormat` sub-parameter — using `spreadsheet` with `fileFormat: 'csv'` does **not** work (produces no output). Correct:
+```json
+{ "operation": "csv", "options": { "fileName": "my-file.csv" } }
+```
+
+### Model selection for cost optimization
+Use cheaper models (Haiku 4.5) for classification/scoring tasks where the work is structured evaluation against defined criteria. Use stronger models (Sonnet 4.6) for creative writing, voice matching, and nuanced content generation.
+
+**Current model IDs** (from Anthropic docs, Feb 2026):
+| Model | API ID | Alias |
+|-------|--------|-------|
+| Sonnet 4.6 | `claude-sonnet-4-6` | `claude-sonnet-4-6` |
+| Haiku 4.5 | `claude-haiku-4-5-20251001` | `claude-haiku-4-5` |
+| Opus 4.6 | `claude-opus-4-6` | `claude-opus-4-6` |
+| Sonnet 4.5 | `claude-sonnet-4-5-20250929` | `claude-sonnet-4-5` |
+
+Use the alias (no date suffix) for latest models; use dated IDs to pin a specific snapshot. **Note**: Claude 3.x models (e.g., `claude-3-5-haiku-20241022`) have been deprecated and return 404 "model not found" errors.
+
+### Dropbox upload node requires `binaryData: true` for binary file uploads
+The Dropbox node v1 `upload` operation defaults to text mode, reading from a `fileContent` parameter. To upload binary data from a previous node (e.g., from `convertToFile`), you **must** set `binaryData: true` alongside `binaryPropertyName: 'data'`. Without it, the node ignores the binary property and uploads an empty file.
+
+### Reddit API requires OAuth — use oauth.reddit.com
+Reddit's public `.json` endpoints (`www.reddit.com/r/.../top.json`) return 403 for unauthenticated requests. Authenticated requests must use `oauth.reddit.com` as the host (not `www.reddit.com`). In n8n, attach the `redditOAuth2Api` credential to an HTTP Request node via `authentication: 'predefinedCredentialType'` + `nodeCredentialType: 'redditOAuth2Api'`. When a workflow fetches from multiple APIs (some needing auth, some not), split the fetch into separate HTTP Request nodes using an IF node on `sourceType`, then recombine results with a Merge (append) before normalizing.
+
+### Known issue: n8n Anthropic node 404 errors
+The `lmChatAnthropic` node has a known bug (as of n8n ~1.113–1.122) where API calls return 404 "resource not found" even with valid API keys. The same key works via curl. If this occurs, the workaround is to replace the `lmChatAnthropic` + `chainLlm` pair with an HTTP Request node calling `POST https://api.anthropic.com/v1/messages` directly, using `authentication: 'predefinedCredentialType'` with `nodeCredentialType: 'anthropicApi'` and an `anthropic-version: 2023-06-01` header.

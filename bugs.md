@@ -75,6 +75,22 @@ Server workflows using the error handler include: Contacts Management, Clients M
 1. Add `settings.errorWorkflow = 'EZTb8m4htw60nP0b'` to both workflows via `createWorkflow()` settings parameter.
 2. Add `onError: 'continueErrorOutput'` on the HTTP Request nodes (Update/Create Contact) in the upsert sub-workflow, and on the Execute Workflow node in MDI Subscriber Hook, so failures don't crash the entire flow.
 
+### 13. Active server workflows missing error workflow
+**Workflows affected:**
+- **Lead Created** (`p5mNy0BOGjRXDejp`) — contact ingestion webhook
+- **MDI Subscriber Hook** (`FOwgPbWEPsHxf3sm`) — Webflow form → Notion contacts
+- **Order Created** (`3jZHf7DPGSvf4vYp`) — Thinkific order webhook → Mailchimp
+- **Product Created** (`H1Rey91MfRuPMBqk`) — Thinkific → Webflow + Mailchimp sync
+- **Product Updated** (`qR1HO77iv8DIf93t`) — Thinkific → Webflow + Mailchimp sync
+- **Product Deleted** (`bYjxeEyFzHXv9cUt`) — Thinkific → Webflow + Mailchimp sync
+- **Empire Flippers** (`NS21WAjZD28C7Qky`) — daily deal analysis (personal, lower priority)
+
+**Issue:** These 7 active workflows have no `settings.errorWorkflow` configured. If any node fails, the execution errors silently with no alert. The server's Error Handler (`EZTb8m4htw60nP0b`) sends Pushover + email notifications on failure, but only workflows that reference it benefit.
+
+**Impact:** Failures in webhook-triggered workflows (Lead Created, MDI Subscriber Hook, Product/Order hooks) go unnoticed until someone spots missing data in Notion, Webflow, or Mailchimp.
+
+**Fix:** Add `settings.errorWorkflow: 'EZTb8m4htw60nP0b'` to each. For workflows with local `.js` files (MDI Subscriber Hook), add it to the `createWorkflow()` settings and push. For server-only workflows, either recreate as local `.js` files or patch via the n8n API directly.
+
 ---
 
 ## P3 — Nice to have
