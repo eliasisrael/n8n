@@ -166,7 +166,7 @@ for (const item of items) {
   const interests = interestsRaw
     ? interestsRaw.split(",").map(s => s.trim()).filter(Boolean)
     : [];
-  const baseTags = ["Mailchimp", ...interests];
+  const baseTags = [...interests];
 
   if (eventType === "upemail") {
     // Email changed: create new contact + mark old as unsubscribed.
@@ -175,14 +175,14 @@ for (const item of items) {
       json: {
         email: get(body, "data[new_email]"),
         email_marketing: "Subscribed",
-        tags: ["Mailchimp"],
+        tags: [],
       },
     });
     results.push({
       json: {
         email: get(body, "data[old_email]"),
         email_marketing: "Unsubscribed",
-        tags: ["Mailchimp"],
+        tags: [],
       },
     });
   } else if (eventType === "cleaned") {
@@ -192,7 +192,7 @@ for (const item of items) {
       json: {
         email: get(body, "data[email]"),
         email_marketing: "Cleaned",
-        tags: ["Mailchimp"],
+        tags: [],
       },
     });
   } else {

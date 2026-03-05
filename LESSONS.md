@@ -139,17 +139,21 @@ The Notion node v2.2 `getAll` operation (on `databasePage`) returns **simplified
 
 - **Title property** → available as both `name` (page title) and `property_<snake_case>` (e.g., `Identifier` → `property_identifier`)
 - **All other properties** → `property_` + lowercase + underscores replacing spaces (e.g., `First name` → `property_first_name`, `Company name` → `property_company_name`, `Address Line 2` → `property_address_line_2`)
-- **Page metadata** → `id`, `url`, `icon`, `cover`, `created_time`, `last_edited_time`
+- **Page metadata** → `id`, `url`, `icon`, `cover`, `name` are top-level (no `property_` prefix)
+- **System timestamps** → `created_time` and `last_edited_time` are **NOT** top-level — they appear as `property_created_time` and `property_last_edited_time` (because Notion databases have built-in "Created time" and "Last edited time" property types that the node treats as regular properties). Using `j.created_time` returns `undefined`.
 
 Example: a Notion database with properties "Identifier" (title), "Email" (email), "First name" (rich_text), "Tags" (multi_select) outputs:
 ```json
 {
   "id": "19a8ebaf-15ee-812f-9be8-e3489a526b3b",
   "name": "user@example.com",
+  "url": "https://www.notion.so/...",
   "property_identifier": "user@example.com",
   "property_email": "user@example.com",
   "property_first_name": "Jane",
-  "property_tags": ["customer", "vip"]
+  "property_tags": ["customer", "vip"],
+  "property_created_time": "2024-12-29T21:39:00.000Z",
+  "property_last_edited_time": "2025-01-15T10:22:00.000Z"
 }
 ```
 
@@ -315,6 +319,128 @@ The `convertToFile` node (v1.1) has separate operations for different formats. F
 { "operation": "csv", "options": { "fileName": "my-file.csv" } }
 ```
 
+### Microsoft Graph API via HTTP Request with Outlook OAuth2 credential
+Use `authentication: 'predefinedCredentialType'` with `nodeCredentialType: 'microsoftOutlookOAuth2Api'` to call the Microsoft Graph API from an HTTP Request node, reusing the same Outlook credential used by the Microsoft Outlook node. The credential handles OAuth2 token management automatically.
+
+Key patterns:
+- **Base URL**: `https://graph.microsoft.com/v1.0/me/...`
+- **Inbox**: `GET /me/mailFolders/inbox/messages`
+- **Sent**: `GET /me/mailFolders/sentItems/messages`
+- **OData query params**: Use `$filter`, `$select`, `$top`, `$orderby` as query string parameters
+- **Date filtering**: `receivedDateTime ge '2024-01-15T00:00:00Z'` or `sentDateTime ge '...'`
+- **Scope requirement**: The OAuth2 credential must include `Mail.Read` scope for reading emails (in addition to `Mail.Send` for sending via the Outlook node)
+
+```json
+{
+  "method": "GET",
+  "url": "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages",
+  "authentication": "predefinedCredentialType",
+  "nodeCredentialType": "microsoftOutlookOAuth2Api",
+  "sendQuery": true,
+  "queryParameters": {
+    "parameters": [
+      { "name": "$filter", "value": "=receivedDateTime ge '{{ ... }}'" },
+      { "name": "$select", "value": "id,subject,from,toRecipients,receivedDateTime,body" },
+      { "name": "$top", "value": "100" }
+    ]
+  }
+}
+```
+
+### Aggregate node for collapsing multiple items into a single item
+The `n8n-nodes-base.aggregate` node (v1) with `aggregate: 'aggregateAllItemData'` collapses all input items into a single output item with a named array field. Useful for bringing a full dataset (e.g., all contacts) into a downstream Code node as one item, so it can be merged with other data streams via append.
+
+```json
+{
+  "aggregate": "aggregateAllItemData",
+  "destinationFieldName": "contacts",
+  "include": "allFieldsExcept",
+  "except": ""
+}
+```
+
+The output is `{ contacts: [{...}, {...}, ...] }` — one item containing an array of all input items' JSON. Use `include: 'allFieldsExcept'` with empty `except` to include all fields.
+
+### Tagged-append merge pattern for heterogeneous data in Code nodes
+When a Code node needs data from multiple sources of different types (e.g., contacts, emails, and existing records), and `$('NodeName')` back-references are unreliable in the Code sandbox, use this pattern:
+
+1. **Aggregate** each homogeneous stream into a single item with a named array field (e.g., `{ contacts: [...] }`, `{ activities: [...] }`)
+2. **Tag** individual items with a type identifier (e.g., `{ _type: 'email', _direction: 'received', ... }`)
+3. **Merge (append)** all streams together — Aggregate items + tagged items flow into one Code node
+4. **Separate by type** in the Code node: iterate `$input.all()`, check for identifying fields (`contacts` array, `activities` array, `_type === 'email'`), and route into separate processing arrays
+
+This avoids `$('NodeName')` back-references entirely — everything arrives via `$input.all()`.
+
+### Notion `status` type property (vs. `select` / `checkbox`)
+Notion has a dedicated "Status" property type (distinct from `select` or `checkbox`) with built-in workflow states. In the Notion API, it is written as:
+```json
+{ "Status": { "status": { "name": "Not started" } } }
+```
+Common status values (may vary by database): `"Not started"`, `"In progress"`, `"Done"`, `"Archived"`. When filtering via the Notion query API, use `"status": { "equals": "Not started" }` (not `"select"` filter).
+
+### Notion query API filter for `relation` emptiness
+To filter database records by whether a relation property is populated or empty:
+```json
+{ "property": "Sales pipeline", "relation": { "is_not_empty": true } }
+{ "property": "Sales pipeline", "relation": { "is_empty": true } }
+```
+This is different from `select` / `checkbox` filters — use the `"relation"` key with `is_not_empty`/`is_empty`.
+
+### Notion `person` property API format
+To set an Assignee (or any person property) via the Notion API:
+```json
+{ "Assignee": { "people": [{ "id": "user-uuid-here" }] } }
+```
+The user UUID can be found via `GET https://api.notion.com/v1/users` with the Notion credential.
+
+### Notion POST /pages supports `children` for inline block creation
+When creating a new Notion database page via `POST /api.notion.com/v1/pages`, you can include a `children` array to populate the page body in a single API call — no separate PATCH /blocks call needed:
+```json
+{
+  "parent": { "database_id": "..." },
+  "properties": { ... },
+  "children": [{
+    "type": "callout",
+    "callout": {
+      "icon": { "type": "emoji", "emoji": "💡" },
+      "rich_text": [{ "type": "text", "text": { "content": "Body content here" } }],
+      "color": "yellow_background"
+    }
+  }]
+}
+```
+This eliminates the fork+merge pattern required when writing to the page body after creation. Only use the separate PATCH when updating an existing page's blocks.
+
+### Raw Notion API vs. Notion node for relation data
+The n8n Notion node (v2.2) simplified output returns **empty arrays** for all `relation` type properties. To get actual relation data (the array of linked page IDs), use the raw Notion API via HTTP Request:
+- **Query**: `POST /databases/{db_id}/query` — returns full page objects with `properties.RelationName.relation = [{id: "page-uuid"}, ...]`
+- **Get page**: `GET /pages/{page_id}` — same full properties structure
+
+Use this pattern when: deduplication depends on relation values, or when downstream logic needs linked page IDs.
+
+### Notion page body (content blocks) via API
+Notion pages have both **properties** (structured fields) and a **body** (rich text content blocks). The body is separate from properties and accessed via different API endpoints:
+
+- **Read**: `GET /blocks/{page_id}/children` — returns the block children of the page
+- **Append**: `PATCH /blocks/{page_id}/children` — appends new blocks to the page body
+- **Auth**: Same Notion credential, requires `Notion-Version: 2022-06-28` header
+
+```json
+{
+  "children": [
+    {
+      "object": "block",
+      "type": "paragraph",
+      "paragraph": {
+        "rich_text": [{ "type": "text", "text": { "content": "Summary text here" } }]
+      }
+    }
+  ]
+}
+```
+
+Use this for storing AI-generated summaries, notes, or other free-form content on Notion database pages. Properties handle structured data; the page body handles narrative content.
+
 ### Model selection for cost optimization
 Use cheaper models (Haiku 4.5) for classification/scoring tasks where the work is structured evaluation against defined criteria. Use stronger models (Sonnet 4.6) for creative writing, voice matching, and nuanced content generation.
 
@@ -334,5 +460,155 @@ The Dropbox node v1 `upload` operation defaults to text mode, reading from a `fi
 ### Reddit API requires OAuth — use oauth.reddit.com
 Reddit's public `.json` endpoints (`www.reddit.com/r/.../top.json`) return 403 for unauthenticated requests. Authenticated requests must use `oauth.reddit.com` as the host (not `www.reddit.com`). In n8n, attach the `redditOAuth2Api` credential to an HTTP Request node via `authentication: 'predefinedCredentialType'` + `nodeCredentialType: 'redditOAuth2Api'`. When a workflow fetches from multiple APIs (some needing auth, some not), split the fetch into separate HTTP Request nodes using an IF node on `sourceType`, then recombine results with a Merge (append) before normalizing.
 
+### Notion relation properties via API
+The n8n Notion node's simplified output returns **empty arrays** for relation properties. To read relation data, use the Notion API directly via HTTP Request: `POST /databases/{db_id}/query` (paginated, `page_size: 100`, follow `next_cursor`).
+
+**Reading**: `record.properties['Relation Name'].relation` returns `[{ id: 'page-id-1' }, { id: 'page-id-2' }]`.
+
+**Writing**: To update a relation, PATCH the page with the **complete** relation array (it replaces, not appends):
+```json
+{ "properties": { "Relation Name": { "relation": [{ "id": "page-id-1" }, { "id": "page-id-2" }] } } }
+```
+
+**Dual vs single-property relations**: Notion has two relation types:
+- **Dual-property (two-way)**: Both databases have a relation property. Updating one side automatically syncs the other. When merging duplicate contacts, union the page IDs on the contact side — the reverse DB updates itself.
+- **Single-property (one-way/inbound)**: Only one database has the relation property (e.g., Sales Pipeline has "Master contacts" but Contacts has no reverse "Pipeline" property). To update these references, you must query the referencing database for records that point to the source contacts and PATCH them directly.
+
+**Targeted relation queries**: Instead of scanning an entire database, use a `relation.contains` filter to find only records referencing specific page IDs:
+```json
+{
+  "filter": {
+    "or": [
+      { "property": "Master contacts", "relation": { "contains": "source-id-1" } },
+      { "property": "Master contacts", "relation": { "contains": "source-id-2" } }
+    ]
+  },
+  "page_size": 100
+}
+```
+This is much more efficient when the set of IDs to search for is small. The Notion API supports up to 100 conditions in a compound filter.
+
+### Notion archive (soft-delete) via API
+To archive a Notion page: `PATCH /pages/{page_id}` with `{ "archived": true }` at the **top level** of the body (NOT inside `properties`). This is a soft delete — the page moves to trash and can be restored.
+
+### HTTP Request v4.2 pagination requires double-nested `options.pagination.pagination`
+The pagination settings in the HTTP Request node (v4.2) use **double nesting** under `options`. The outer `pagination` key is the option toggle; the inner `pagination` key holds the actual configuration. Using only one level of nesting (`options.pagination.paginationMode`) silently fails — the node imports without errors but pagination doesn't execute, returning only the first page of results.
+
+**Correct structure:**
+```json
+"options": {
+  "pagination": {
+    "pagination": {
+      "paginationMode": "updateAParameterInEachRequest",
+      "parameters": {
+        "parameters": [
+          { "name": "start_cursor", "type": "body", "value": "={{ $response.body.next_cursor }}" }
+        ]
+      },
+      "paginationCompleteWhen": "other",
+      "completeExpression": "={{ !$response.body.has_more }}",
+      "limitPagesFetched": true,
+      "maxRequests": 100,
+      "requestInterval": 350
+    }
+  }
+}
+```
+
+Key details:
+- `limitPagesFetched: true` enables the `maxRequests` cap
+- `requestInterval` is in milliseconds (350ms ≈ 3 req/s for Notion API compliance)
+- `paginationMode` values: `"updateAParameterInEachRequest"` (cursor/offset), `"responseContainsNextURL"` (link-based)
+
+### Code nodes CANNOT have credentials — use HTTP Request nodes for authenticated API calls
+The `n8n-nodes-base.code` node type does **not** define any credential types. Attempting to attach credentials (e.g., `credentials: { notionApi: { id: '...', name: '...' } }`) causes a runtime error: `"Node type 'n8n-nodes-base.code' does not have any credentials defined"`. The `this.helpers.httpRequestWithAuthentication` method is therefore **not available** in Code nodes.
+
+**Workaround**: Move authenticated API calls into a separate **HTTP Request** node (v4.2) with `authentication: 'predefinedCredentialType'` + `nodeCredentialType: 'notionApi'`. For paginated queries, use the HTTP Request node's built-in pagination (`paginationMode: 'updateAParameterInEachRequest'`). Use a Merge node (append mode) to combine the HTTP response data with other data streams before feeding into a Code node for processing.
+
+### Merge (combineByPosition) for preserving context through HTTP Request nodes
+When an HTTP Request node replaces item data with the API response, use a **fork + Merge** pattern to preserve the original context. Connect the upstream node to BOTH the HTTP Request node AND the Merge node's second input. The Merge (combineByPosition) pairs each HTTP response (input 0) with the original plan item (input 1), combining all fields into one item. This only works reliably when the item count is identical on both inputs (1:1 mapping).
+
+### Workflow canvas layout conventions
+When placing nodes programmatically (via the API or in workflow JS files), follow these layout rules to keep the canvas readable:
+
+- **Horizontal spacing: 224px** between consecutive nodes in a chain. This is the standard grid increment.
+- **When inserting a node into an existing chain**, shift **all** downstream nodes to the right by 224px. Never squeeze a node into an existing gap — it crowds the canvas and overlaps connection arcs.
+- **Same-chain nodes share a y-coordinate.** Keep horizontally connected nodes on the same row to maintain visual alignment.
+- **Parallel branches need y-separation.** When a node forks into multiple paths (e.g., IF true/false, or a node with multiple outputs), offset each branch vertically by at least **200px** so nodes and connection arcs don't overlap. Example: a backup branch at y=100 and an execution branch at y=400.
+- **Sticky notes go above the relevant node.** Position the sticky ~240px above (lower y value) with its x roughly aligned to the node it annotates. Use `color: 4` (yellow) for warnings/explanations. Typical size: 340×170.
+
+## Future Work
+
+### Mailchimp ↔ Notion linkage via NOTIONID merge field
+
+**Problem**: The Notion Webhook Router (`6kSboH0MtIOedeja`) fires for every Contacts DB change, including when the Merge Duplicate Contacts workflow archives source records. Since source and destination share the same email, the archive event can overwrite Mailchimp with stale data from the source record.
+
+**Solution**: Add a `NOTIONID` custom text merge field to the Mailchimp audience that stores the Notion page ID of the canonical contact. Use it as a guard in the webhook-to-Mailchimp sync pipeline.
+
+**Guard logic (event type × NOTIONID)**:
+
+| Event type | `NOTIONID` in Mailchimp | Action |
+|---|---|---|
+| `page.properties_updated` | Matches incoming page ID | Update Mailchimp record |
+| `page.properties_updated` | Blank / missing | Update Mailchimp **and write** incoming page ID into `NOTIONID` (claim) |
+| `page.properties_updated` | Set but doesn't match | **Skip** (stale/duplicate source) |
+| `page.deleted` | Matches incoming page ID | **Archive** the Mailchimp member (canonical contact was deleted) |
+| `page.deleted` | Doesn't match or blank | **Skip** (duplicate was deleted, not the canonical) |
+
+The webhook subscription (Notion integration API version `2022-06-28`) is currently set to all page events and all database events, so both `page.properties_updated` and `page.deleted` events reach the router.
+
+**Note**: As of March 2026, `page.deleted` events are filtered out by the "Skip Deleted Events" filter node in the Notion Webhook Router. See the broader implications section below for context.
+
+**Webhook delivery latency**: Notion webhook events may be delayed 15–30 seconds from the time of the actual change. This applies to all event types, not just deletions.
+
+**Implementation steps**:
+
+1. **Create the merge field** in Mailchimp audience settings: text field, tag `NOTIONID`. (Can also be done via `POST /lists/{list_id}/merge-fields` with `{ "name": "Notion ID", "tag": "NOTIONID", "type": "text" }`)
+2. **Update "Create or Update Mailchimp Record"** sub-workflow (`qvhhwm0l47pZnP8c`): always pass the Notion page `id` into the `NOTIONID` merge field alongside existing fields
+3. **Pass the event type through the router**: The Notion Webhook Router currently formats contact data but does not forward the event type. Add the event type (from the webhook payload) to the data passed into "Contact Updates from Notion" so it can branch on it.
+4. **Add a guard in "Contact Updates from Notion"** (`XfO5Zg1zn6A4vhD6`): before calling the Mailchimp sub-workflow, look up the Mailchimp member by email (GET `/lists/{list_id}/members/{subscriber_hash}`), read `merge_fields.NOTIONID`, and branch per the table above:
+   - `page.properties_updated` + match/blank → update Mailchimp (+ claim if blank)
+   - `page.properties_updated` + mismatch → skip
+   - `page.deleted` + match → archive Mailchimp member (PUT `/lists/{list_id}/members/{subscriber_hash}` with `{ "status": "cleaned" }` or use the archive/delete endpoint)
+   - `page.deleted` + mismatch/blank → skip
+
+**Edge cases to handle**:
+- *New Mailchimp member from signup form (no Notion record yet)*: NOTIONID stays blank until a Notion contact with the same email triggers a webhook, which then claims it.
+- *Notion record deleted and recreated*: New page ID won't match. Guard could check if the page referenced by NOTIONID is archived/deleted (GET `/pages/{id}`, check `archived: true`); if so, allow the new page to re-claim.
+- *Two Notion duplicates fire webhooks before merge runs*: First one claims. Second is blocked. Running the merge workflow resolves the underlying duplicate.
+
+**Affected workflows**:
+- `Notion Webhook Router` — `6kSboH0MtIOedeja` (active)
+- `Contact Updates from Notion` — `XfO5Zg1zn6A4vhD6` (sub-workflow, receives formatted contact)
+- `Create or Update Mailchimp Record` — `qvhhwm0l47pZnP8c` (sub-workflow, writes to Mailchimp API)
+
+### `page.deleted` events in the Notion Webhook Router — broader implications
+
+The webhook subscription receives all page events including `page.deleted`. The router currently does not filter on event type, so `page.deleted` events flow through the same paths as `page.properties_updated`. This affects **all** routed databases, not just Contacts:
+
+| Database | Sub-workflow | Theoretical `page.deleted` behavior |
+|---|---|---|
+| Contacts | Contact Updates from Notion → Mailchimp | Should archive/remove the linked Mailchimp member |
+| Appearances | Execute Appearances Workflow | Should remove the matching entry from Webflow |
+| Clients, Partners, Testimonials, etc. | Their respective sub-workflows | Would need equivalent cleanup in downstream systems |
+
+**Current stance**: Record deletion is generally poor practice — marking a record as inactive is preferred. No deletion-propagation logic exists in any of the sub-workflows today. The router silently processes `page.deleted` events through the same update path, which may cause errors or no-ops depending on what the sub-workflow tries to do with a deleted page's data.
+
+**Implemented (March 2026)**: A "Skip Deleted Events" filter node was added to the router (after "Trusted Payload?") that drops events where `body.type` ends with `.deleted`. This covers both `page.deleted` and `database.deleted`. A sticky note on the canvas documents the rationale. Manually tested and confirmed working.
+
+**Long-term**: If deletion propagation is ever needed, implement it per-database with the NOTIONID-style linkage pattern (for Contacts → Mailchimp) or equivalent ID-based guards for other systems (e.g., Webflow item ID for Appearances). Each sub-workflow would need a dedicated `page.deleted` branch that performs the correct cleanup action in the downstream system.
+
+---
+
 ### Known issue: n8n Anthropic node 404 errors
 The `lmChatAnthropic` node has a known bug (as of n8n ~1.113–1.122) where API calls return 404 "resource not found" even with valid API keys. The same key works via curl. If this occurs, the workaround is to replace the `lmChatAnthropic` + `chainLlm` pair with an HTTP Request node calling `POST https://api.anthropic.com/v1/messages` directly, using `authentication: 'predefinedCredentialType'` with `nodeCredentialType: 'anthropicApi'` and an `anthropic-version: 2023-06-01` header.
+
+### Anthropic API key stored as Header Auth credential
+The Anthropic API key on this server is stored as an `httpHeaderAuth` credential (not the native `anthropicApi` type). This means:
+- `lmChatAnthropic` and `chainLlm` nodes **cannot** use it (they require `anthropicApi` credential type)
+- HTTP Request nodes must use `authentication: 'genericCredentialType'` with `genericAuthType: 'httpHeaderAuth'` (not `predefinedCredentialType` with `nodeCredentialType: 'anthropicApi'`)
+- The credential reference key is `httpHeaderAuth` (not `anthropicApi`):
+  ```js
+  credentials: { httpHeaderAuth: { id: 'JKGmltAERvaKJ6OS', name: 'Anthropic API Key' } }
+  ```
+- The `anthropic-version` header must still be sent separately via `headerParameters`

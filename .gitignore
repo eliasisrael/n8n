@@ -3,3 +3,5 @@ output/
 server/
 .env
 .DS_Store
+*.csv
+router-backup.json
