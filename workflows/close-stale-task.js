@@ -26,7 +26,7 @@
  * Pipeline DB ID → VF Tasks relation property mapping:
  *   35d10c83-92e6-4ce2-adc2-8c03e2c97480  →  "Comms pipeline"
  *   2ed21e43-d3a5-45f4-8cf4-a2a8f61a264f  →  "Sales pipeline"
- *   a57e67c2-b745-4812-8c81-57e433ffec92  →  "Partner pipeline"
+ *   457cfa4c-123b-4718-a7d3-c8bf7ea4a27e  →  "Partner pipeline"
  */
 
 import { createWorkflow, createNode, connect } from '../lib/workflow.js';
@@ -42,7 +42,7 @@ const TASKS_DB_ID = '3528f55e5be14e96ad617d07e6b0beaa'; // VF Tasks
 const DB_TO_REL_PROP = {
   '35d10c83-92e6-4ce2-adc2-8c03e2c97480': 'Comms pipeline',
   '2ed21e43-d3a5-45f4-8cf4-a2a8f61a264f': 'Sales pipeline',
-  'a57e67c2-b745-4812-8c81-57e433ffec92':  'Partner pipeline',
+  '457cfa4c-123b-4718-a7d3-c8bf7ea4a27e': 'Partner pipeline',
 };
 
 const DB_TO_REL_PROP_JSON = JSON.stringify(DB_TO_REL_PROP);

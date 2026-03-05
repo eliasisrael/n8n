@@ -1,7 +1,7 @@
 /**
  * Stale Pipeline Alerts → VF Tasks with AI Suggested Next Step
  *
- * Daily workflow that scans the Sales, Superfriend, and Comms pipeline
+ * Daily workflow that scans the Sales, Partner, and Comms pipeline
  * databases for deals that have had no activity for at least WARN_BUSINESS_DAYS
  * business days. For each qualifying deal without an existing open task, creates
  * a task in VF Tasks with:
@@ -42,18 +42,21 @@ const PIPELINES = [
     dbId: '2ed21e43d3a545f48cf4a2a8f61a264f',
     terminalStatuses: ['Lost/rejected', 'Completed', 'Signed 100%'],
     tasksRelationProp: 'Sales pipeline',
+    tag: 'VF sales',
   },
   {
-    name: 'Superfriend',
-    dbId: 'a57e67c2b74548128c8157e433ffec92',
-    terminalStatuses: ['Agreed partner'],
+    name: 'Partner',
+    dbId: '457cfa4c123b4718a7d3c8bf7ea4a27e',
+    terminalStatuses: ['Closed/signed', 'Lost/rejected'],
     tasksRelationProp: 'Partner pipeline',
+    tag: 'VF sales',
   },
   {
     name: 'Comms',
     dbId: '35d10c8392e64ce2adc28c03e2c97480',
     terminalStatuses: ['Completed/Captured', 'Rejected/Cancelled', 'VF delivered'],
     tasksRelationProp: 'Comms pipeline',
+    tag: 'VF marketing',
   },
 ];
 
@@ -99,7 +102,7 @@ for (const item of $input.all()) {
   const status = j.property_status || '';
   if (terminal.has(status)) continue;
 
-  const edited = j.property_last_edited_time;
+  const edited = j.property_last_edited_time || j.property_added || j.property_created_time;
   if (!edited) continue;
 
   const daysBusiness = businessDaysSince(edited);
@@ -154,8 +157,8 @@ getSales.retryOnFail = true;
 getSales.maxTries = 3;
 getSales.waitBetweenTries = 1000;
 
-const getSuperfriend = createNode(
-  'Get Superfriend Pipeline',
+const getPartner = createNode(
+  'Get Partner Pipeline',
   'n8n-nodes-base.notion',
   {
     resource: 'databasePage',
@@ -165,9 +168,9 @@ const getSuperfriend = createNode(
   },
   { position: [224, 300], typeVersion: 2.2, credentials: NOTION_CREDENTIAL },
 );
-getSuperfriend.retryOnFail = true;
-getSuperfriend.maxTries = 3;
-getSuperfriend.waitBetweenTries = 1000;
+getPartner.retryOnFail = true;
+getPartner.maxTries = 3;
+getPartner.waitBetweenTries = 1000;
 
 const getComms = createNode(
   'Get Comms Pipeline',
@@ -192,8 +195,8 @@ const filterSales = createNode(
   { position: [448, 100], typeVersion: 2 },
 );
 
-const filterSuperfriend = createNode(
-  'Filter Superfriend',
+const filterPartner = createNode(
+  'Filter Partner',
   'n8n-nodes-base.code',
   { jsCode: buildFilterCode(1), mode: 'runOnceForAllItems' },
   { position: [448, 300], typeVersion: 2 },
@@ -207,8 +210,8 @@ const filterComms = createNode(
 );
 
 // 8–9. Merge (append) — combine all three filtered streams
-const mergeSalesSuperfriend = createNode(
-  'Merge Sales + Superfriend',
+const mergeSalesPartner = createNode(
+  'Merge Sales + Partner',
   'n8n-nodes-base.merge',
   { mode: 'append' },
   { position: [672, 200], typeVersion: 3 },
@@ -301,9 +304,13 @@ const TASKS_DB_ID    = '${TASKS_DB_ID}';
 const NOTIFY_USER_ID = '${NOTIFY_USER_ID}';
 const PIPELINES      = ${PIPELINES_JSON};
 
-// Build pipeline name → VF Tasks relation property name map
+// Build pipeline name → VF Tasks relation property name + tag maps
 const pipelineToRelProp = {};
-for (const p of PIPELINES) pipelineToRelProp[p.name] = p.tasksRelationProp;
+const pipelineToTag = {};
+for (const p of PIPELINES) {
+  pipelineToRelProp[p.name] = p.tasksRelationProp;
+  pipelineToTag[p.name] = p.tag;
+}
 
 // Separate open-tasks API response from stale deal items
 let openTasks = [];
@@ -319,22 +326,47 @@ for (const item of $input.all()) {
   }
 }
 
-// Build set of (pipeline:deal_page_id) pairs that already have an open task
-// Uses raw Notion API page objects so relation arrays are populated
-const existingAlerts = new Set();
+// Build map of (pipeline:deal_page_id) → { taskId, tags } for open tasks
+// Uses raw Notion API page objects so relation arrays and Tags are populated
+const existingAlerts = new Map();
 for (const task of openTasks) {
   const p = task.properties || {};
-  for (const r of (p['Sales pipeline']?.relation || []))   existingAlerts.add('Sales:' + r.id);
-  for (const r of (p['Partner pipeline']?.relation || [])) existingAlerts.add('Superfriend:' + r.id);
-  for (const r of (p['Comms pipeline']?.relation || []))   existingAlerts.add('Comms:' + r.id);
+  const currentTags = (p['Tags']?.multi_select || []).map(t => t.name);
+  for (const r of (p['Sales pipeline']?.relation || []))
+    existingAlerts.set('Sales:' + r.id, { taskId: task.id, tags: currentTags });
+  for (const r of (p['Partner pipeline']?.relation || []))
+    existingAlerts.set('Partner:' + r.id, { taskId: task.id, tags: currentTags });
+  for (const r of (p['Comms pipeline']?.relation || []))
+    existingAlerts.set('Comms:' + r.id, { taskId: task.id, tags: currentTags });
 }
 
 const result = [];
 for (const deal of dealItems) {
-  if (existingAlerts.has(deal.pipeline + ':' + deal.page_id)) continue;
+  const alertKey = deal.pipeline + ':' + deal.page_id;
+  const existing = existingAlerts.get(alertKey);
+  if (existing) {
+    // Dedup match — backfill tag if missing
+    const expectedTag = pipelineToTag[deal.pipeline] || 'VF sales';
+    if (!existing.tags.includes(expectedTag)) {
+      const updatedTags = [...existing.tags, expectedTag];
+      result.push({
+        json: {
+          _patchTags: true,
+          taskId: existing.taskId,
+          patchBody: {
+            properties: {
+              Tags: { multi_select: updatedTags.map(t => ({ name: t })) },
+            },
+          },
+        },
+      });
+    }
+    continue;
+  }
   if (!deal.stale_deadline) continue;
 
   const relProp   = pipelineToRelProp[deal.pipeline] || 'Sales pipeline';
+  const tag       = pipelineToTag[deal.pipeline] || 'VF sales';
   const taskName  = \`Follow up: \${deal.deal_name} (\${deal.pipeline})\`;
 
   const prompt = \`You are a CRM assistant. A deal has had no activity for \${deal.days_elapsed} business day(s) and must be advanced by \${deal.stale_deadline}.
@@ -354,6 +386,7 @@ Suggest ONE specific, actionable next step to advance this deal. 1-2 sentences o
       Due:         { date: { start: deal.stale_deadline } },
       Status:      { status: { name: 'Not started' } },
       Priority:    { select: { name: 'Medium' } },
+      Tags:        { multi_select: [{ name: tag }] },
       [relProp]:   { relation: [{ id: deal.page_id }] },
     },
   };
@@ -376,7 +409,53 @@ return result;
   { position: [1344, 400], typeVersion: 2 },
 );
 
-// 13. Call Haiku — generate suggested next step via Anthropic API
+// 13. IF node — split tag-patch items from new-task items
+const ifPatchTags = createNode(
+  'Patch or Create?',
+  'n8n-nodes-base.if',
+  {
+    conditions: {
+      options: { typeValidation: 'strict' },
+      conditions: [
+        {
+          id: 'patch-tags-check',
+          leftValue: '={{ $json._patchTags }}',
+          rightValue: true,
+          operator: { type: 'boolean', operation: 'equals' },
+        },
+      ],
+    },
+  },
+  { position: [1568, 400], typeVersion: 2 },
+);
+
+// 14. Patch Task Tags — backfill missing tags on existing tasks
+const patchTags = createNode(
+  'Patch Task Tags',
+  'n8n-nodes-base.httpRequest',
+  {
+    method: 'PATCH',
+    url: '=https://api.notion.com/v1/pages/{{$json.taskId}}',
+    authentication: 'predefinedCredentialType',
+    nodeCredentialType: 'notionApi',
+    sendHeaders: true,
+    headerParameters: {
+      parameters: [{ name: 'Notion-Version', value: '2022-06-28' }],
+    },
+    sendBody: true,
+    specifyBody: 'json',
+    jsonBody: '={{ $json.patchBody }}',
+    options: {
+      batching: { batch: { batchSize: 1, batchInterval: 334 } },
+    },
+  },
+  { position: [1792, 200], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
+);
+patchTags.retryOnFail = true;
+patchTags.maxTries = 3;
+patchTags.continueOnFail = true;
+
+// 15. Call Haiku — generate suggested next step via Anthropic API
 const callHaiku = createNode(
   'Call Haiku',
   'n8n-nodes-base.httpRequest',
@@ -396,21 +475,21 @@ const callHaiku = createNode(
       batching: { batch: { batchSize: 1, batchInterval: 200 } },
     },
   },
-  { position: [1568, 300], typeVersion: 4.2, credentials: ANTHROPIC_CREDENTIAL },
+  { position: [1792, 500], typeVersion: 4.2, credentials: ANTHROPIC_CREDENTIAL },
 );
 callHaiku.retryOnFail = true;
 callHaiku.maxTries = 2;
 callHaiku.continueOnFail = true;
 
-// 14. Merge Haiku + Context — preserve taskProperties through the data-replacing HTTP call
+// 16. Merge Haiku + Context — preserve taskProperties through the data-replacing HTTP call
 const mergeHaikuAndContext = createNode(
   'Merge Haiku + Context',
   'n8n-nodes-base.merge',
   { mode: 'combine', combineBy: 'combineByPosition' },
-  { position: [1792, 400], typeVersion: 3 },
+  { position: [2016, 600], typeVersion: 3 },
 );
 
-// 15. Finalize Task Body — add AI suggestion as callout + rich text blocks in task page body
+// 17. Finalize Task Body — add AI suggestion as callout + rich text blocks in task page body
 const finalizeTaskBody = createNode(
   'Finalize Task Body',
   'n8n-nodes-base.code',
@@ -514,10 +593,10 @@ return {
 };
 `,
   },
-  { position: [2016, 400], typeVersion: 2 },
+  { position: [2240, 600], typeVersion: 2 },
 );
 
-// 16. Create Task — POST to Notion /pages (includes children for task body)
+// 18. Create Task — POST to Notion /pages (includes children for task body)
 const createTask = createNode(
   'Create Task',
   'n8n-nodes-base.httpRequest',
@@ -537,7 +616,7 @@ const createTask = createNode(
       batching: { batch: { batchSize: 1, batchInterval: 334 } },
     },
   },
-  { position: [2240, 400], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
+  { position: [2464, 600], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
 );
 createTask.retryOnFail = true;
 createTask.maxTries = 3;
@@ -551,16 +630,18 @@ export default createWorkflow('Stale Pipeline Alerts', {
   nodes: [
     scheduleTrigger,
     getSales,
-    getSuperfriend,
+    getPartner,
     getComms,
     filterSales,
-    filterSuperfriend,
+    filterPartner,
     filterComms,
-    mergeSalesSuperfriend,
+    mergeSalesPartner,
     mergeAll,
     getOpenTasks,
     mergeStaleAndTasks,
     checkDedupAndBuild,
+    ifPatchTags,
+    patchTags,
     callHaiku,
     mergeHaikuAndContext,
     finalizeTaskBody,
@@ -569,19 +650,19 @@ export default createWorkflow('Stale Pipeline Alerts', {
   connections: [
     // Trigger → parallel branches
     connect(scheduleTrigger, getSales),
-    connect(scheduleTrigger, getSuperfriend),
+    connect(scheduleTrigger, getPartner),
     connect(scheduleTrigger, getComms),
     connect(scheduleTrigger, getOpenTasks),
 
     // Notion → filter Code nodes
     connect(getSales, filterSales),
-    connect(getSuperfriend, filterSuperfriend),
+    connect(getPartner, filterPartner),
     connect(getComms, filterComms),
 
     // Filter → Merge chain (append)
-    connect(filterSales, mergeSalesSuperfriend, 0, 0),
-    connect(filterSuperfriend, mergeSalesSuperfriend, 0, 1),
-    connect(mergeSalesSuperfriend, mergeAll, 0, 0),
+    connect(filterSales, mergeSalesPartner, 0, 0),
+    connect(filterPartner, mergeSalesPartner, 0, 1),
+    connect(mergeSalesPartner, mergeAll, 0, 0),
     connect(filterComms, mergeAll, 0, 1),
 
     // Combine stale deals + open tasks
@@ -591,10 +672,15 @@ export default createWorkflow('Stale Pipeline Alerts', {
     // Core processing chain
     connect(mergeStaleAndTasks, checkDedupAndBuild),
 
-    // Fork: checkDedupAndBuild → callHaiku (data path)
-    connect(checkDedupAndBuild, callHaiku),
-    // Fork: checkDedupAndBuild → mergeHaikuAndContext input 1 (passthrough for taskProperties)
-    connect(checkDedupAndBuild, mergeHaikuAndContext, 0, 1),
+    // Split: tag-patch items vs new-task items
+    connect(checkDedupAndBuild, ifPatchTags),
+
+    // True branch (output 0): patch missing tags on existing tasks
+    connect(ifPatchTags, patchTags, 0, 0),
+
+    // False branch (output 1): new tasks → Haiku + Create flow
+    connect(ifPatchTags, callHaiku, 1, 0),
+    connect(ifPatchTags, mergeHaikuAndContext, 1, 1),
 
     // callHaiku → mergeHaikuAndContext input 0 (AI response)
     connect(callHaiku, mergeHaikuAndContext, 0, 0),
