@@ -128,3 +128,7 @@ Other workflows that modify contacts should call the upsert sub-workflow rather 
 - For sub-workflows, use `n8n-nodes-base.executeWorkflowTrigger` as the entry point
 - For IF node v2, use the `conditions.conditions[].operator` structure with `{ type, operation, singleValue }`
 - After import, Notion nodes will need their credential connected and property mappings verified in the n8n UI
+
+## Git Workflow
+- We are the only ones working in this repo — push directly to `origin/master` (no PRs needed)
+- Commit and push when the user asks, or when a logical unit of work is complete
