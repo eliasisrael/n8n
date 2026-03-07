@@ -27,6 +27,7 @@ The workflow JSON must include `staticData: null`, `pinData: {}`, `meta: { templ
   - `startsWith` / `endsWith` (and their `not` variants)
   - `regex` / `notRegex`
 - Operators with `singleValue: true` (like `exists`, `notEmpty`) don't need a `rightValue`
+- **Boolean "is true" checks**: use `operation: 'true'` with `singleValue: true` and `rightValue: ''`. Do NOT use `operation: 'equals'` with `rightValue: true` — the equals check can evaluate to true when the field is undefined/missing. Same pattern for "is false": `operation: 'false'` with `singleValue: true`
 
 ### Code node execution mode matters
 - `runOnceForAllItems` processes all items in one execution; use `$('Node').first().json` and `$input.first().json`; return an array `[{ json: ... }]`
@@ -597,6 +598,25 @@ The webhook subscription receives all page events including `page.deleted`. The 
 **Implemented (March 2026)**: A "Skip Deleted Events" filter node was added to the router (after "Trusted Payload?") that drops events where `body.type` ends with `.deleted`. This covers both `page.deleted` and `database.deleted`. A sticky note on the canvas documents the rationale. Manually tested and confirmed working.
 
 **Long-term**: If deletion propagation is ever needed, implement it per-database with the NOTIONID-style linkage pattern (for Contacts → Mailchimp) or equivalent ID-based guards for other systems (e.g., Webflow item ID for Appearances). Each sub-workflow would need a dedicated `page.deleted` branch that performs the correct cleanup action in the downstream system.
+
+### Notion Webhook Router: debounce to prevent ping-pong loops
+
+**Problem**: Notion fires multiple webhook events for a single user action (e.g., `page.created` + `page.properties_updated` within ~1 second). Each event triggers an independent n8n execution, causing race conditions in downstream writes (Mailchimp, Notion upsert) and amplifying bidirectional sync bounce-backs. A single contact edit can produce 19 executions across 5 workflows.
+
+**Root causes identified** (from execution trace of `bredetrollsaas@outlook.com`, March 2026):
+1. **Race condition**: Two near-simultaneous Notion events both fetched stale Mailchimp data before either write completed, causing duplicate writes and duplicate Mailchimp `profile` webhooks
+2. **Data mismatch bounce**: Notion had `Email Marketing: null` while Mailchimp had `status: subscribed`. The Mailchimp→Notion sync correctly wrote `Subscribed` back, but that triggered another Notion webhook cycle
+3. **Notion Upsert includes all non-null fields in PATCH**, not just changed ones (cosmetic — doesn't cause the loop but adds noise to webhook events)
+
+**Proposed debounce approach**: Use **Upstash Redis free tier** (500K commands/month, REST API) as a lightweight dedup cache in the Notion Router:
+1. After webhook validation, extract `entity.id` (page_id)
+2. HTTP Request to Upstash: `SET debounce:page:{page_id} 1 EX 10 NX` (set-if-not-exists, 10-second TTL)
+3. If SET returned OK → first event for this page → proceed with routing
+4. If SET returned null → duplicate within 10 seconds → respond 200 and stop
+
+This requires no paid n8n features, no community nodes, and stays within Upstash's free tier. The REST API is callable directly from n8n HTTP Request nodes.
+
+**Status**: Not yet implemented. Recorded for future work.
 
 ---
 
