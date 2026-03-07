@@ -507,7 +507,48 @@ patchTags.retryOnFail = true;
 patchTags.maxTries = 3;
 patchTags.continueOnFail = true;
 
-// 15. Call Haiku — generate suggested next step via Anthropic API
+// 15. Validate Create Items — ensure false-branch items have the required fields
+const validateCreateItems = createNode(
+  'Validate Create Items',
+  'n8n-nodes-base.filter',
+  {
+    conditions: {
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 1 },
+      conditions: [
+        {
+          id: 'anthropic-body-exists',
+          leftValue: '={{ $json.anthropicBody }}',
+          rightValue: '',
+          operator: { type: 'object', operation: 'exists', singleValue: true },
+        },
+        {
+          id: 'anthropic-body-not-empty',
+          leftValue: '={{ $json.anthropicBody }}',
+          rightValue: '',
+          operator: { type: 'object', operation: 'notEmpty', singleValue: true },
+        },
+        {
+          id: 'task-props-exists',
+          leftValue: '={{ $json.taskProperties }}',
+          rightValue: '',
+          operator: { type: 'object', operation: 'exists', singleValue: true },
+        },
+        {
+          id: 'task-props-not-empty',
+          leftValue: '={{ $json.taskProperties }}',
+          rightValue: '',
+          operator: { type: 'object', operation: 'notEmpty', singleValue: true },
+        },
+      ],
+      combinator: 'and',
+    },
+    options: {},
+  },
+  { position: [1792, 400], typeVersion: 2 },
+);
+validateCreateItems.onError = 'stopWorkflow';
+
+// 16. Call Haiku — generate suggested next step via Anthropic API
 const callHaiku = createNode(
   'Call Haiku',
   'n8n-nodes-base.httpRequest',
@@ -527,21 +568,21 @@ const callHaiku = createNode(
       batching: { batch: { batchSize: 1, batchInterval: 200 } },
     },
   },
-  { position: [1792, 500], typeVersion: 4.2, credentials: ANTHROPIC_CREDENTIAL },
+  { position: [2016, 500], typeVersion: 4.2, credentials: ANTHROPIC_CREDENTIAL },
 );
 callHaiku.retryOnFail = true;
 callHaiku.maxTries = 2;
 callHaiku.continueOnFail = true;
 
-// 16. Merge Haiku + Context — preserve taskProperties through the data-replacing HTTP call
+// 17. Merge Haiku + Context — preserve taskProperties through the data-replacing HTTP call
 const mergeHaikuAndContext = createNode(
   'Merge Haiku + Context',
   'n8n-nodes-base.merge',
   { mode: 'combine', combineBy: 'combineByPosition' },
-  { position: [2016, 600], typeVersion: 3 },
+  { position: [2240, 600], typeVersion: 3 },
 );
 
-// 17. Finalize Task Body — add AI suggestion as callout + rich text blocks in task page body
+// 18. Finalize Task Body — add AI suggestion as callout + rich text blocks in task page body
 const finalizeTaskBody = createNode(
   'Finalize Task Body',
   'n8n-nodes-base.code',
@@ -645,10 +686,10 @@ return {
 };
 `,
   },
-  { position: [2240, 600], typeVersion: 2 },
+  { position: [2464, 600], typeVersion: 2 },
 );
 
-// 18. Create Task — POST to Notion /pages (includes children for task body)
+// 19. Create Task — POST to Notion /pages (includes children for task body)
 const createTask = createNode(
   'Create Task',
   'n8n-nodes-base.httpRequest',
@@ -668,7 +709,7 @@ const createTask = createNode(
       batching: { batch: { batchSize: 1, batchInterval: 334 } },
     },
   },
-  { position: [2464, 600], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
+  { position: [2688, 600], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
 );
 createTask.retryOnFail = true;
 createTask.maxTries = 3;
@@ -694,6 +735,7 @@ export default createWorkflow('Stale Pipeline Alerts', {
     checkDedupAndBuild,
     ifPatchTags,
     patchTags,
+    validateCreateItems,
     callHaiku,
     mergeHaikuAndContext,
     finalizeTaskBody,
@@ -730,9 +772,10 @@ export default createWorkflow('Stale Pipeline Alerts', {
     // True branch (output 0): patch missing tags on existing tasks
     connect(ifPatchTags, patchTags, 0, 0),
 
-    // False branch (output 1): new tasks → Haiku + Create flow
-    connect(ifPatchTags, callHaiku, 1, 0),
-    connect(ifPatchTags, mergeHaikuAndContext, 1, 1),
+    // False branch (output 1): validate → Haiku + Create flow
+    connect(ifPatchTags, validateCreateItems, 1, 0),
+    connect(validateCreateItems, callHaiku, 0, 0),
+    connect(validateCreateItems, mergeHaikuAndContext, 0, 1),
 
     // callHaiku → mergeHaikuAndContext input 0 (AI response)
     connect(callHaiku, mergeHaikuAndContext, 0, 0),
