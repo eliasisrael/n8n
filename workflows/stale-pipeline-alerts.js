@@ -453,8 +453,8 @@ const ifPatchTags = createNode(
         {
           id: 'patch-tags-check',
           leftValue: '={{ $json._patchTags }}',
-          rightValue: true,
-          operator: { type: 'boolean', operation: 'equals' },
+          rightValue: '',
+          operator: { type: 'boolean', operation: 'true', singleValue: true },
         },
       ],
     },
