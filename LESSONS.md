@@ -27,7 +27,15 @@ The workflow JSON must include `staticData: null`, `pinData: {}`, `meta: { templ
   - `startsWith` / `endsWith` (and their `not` variants)
   - `regex` / `notRegex`
 - Operators with `singleValue: true` (like `exists`, `notEmpty`) don't need a `rightValue`
-- **Boolean "is true" checks**: use `operation: 'true'` with `singleValue: true` and `rightValue: ''`. Do NOT use `operation: 'equals'` with `rightValue: true` — the equals check can evaluate to true when the field is undefined/missing. Same pattern for "is false": `operation: 'false'` with `singleValue: true`
+- **Boolean "is true" checks**: n8n's built-in boolean operators (`operation: 'equals'` and `operation: 'true'`) are both unreliable when the field may be undefined/missing — they can evaluate to true for undefined values. The safe pattern is to do the check in the expression itself using strict equality, then test the result with the boolean `true` operator:
+  ```js
+  {
+    leftValue: '={{ $json.myField === true }}',
+    rightValue: '',
+    operator: { type: 'boolean', operation: 'true', singleValue: true },
+  }
+  ```
+  This guarantees `false` for undefined, null, or any non-boolean value. Same approach for "is false": `leftValue: '={{ $json.myField === false }}'`
 
 ### Code node execution mode matters
 - `runOnceForAllItems` processes all items in one execution; use `$('Node').first().json` and `$input.first().json`; return an array `[{ json: ... }]`

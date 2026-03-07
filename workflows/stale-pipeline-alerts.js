@@ -452,7 +452,7 @@ const ifPatchTags = createNode(
       conditions: [
         {
           id: 'patch-tags-check',
-          leftValue: '={{ $json._patchTags }}',
+          leftValue: '={{ $json._patchTags === true }}',
           rightValue: '',
           operator: { type: 'boolean', operation: 'true', singleValue: true },
         },
