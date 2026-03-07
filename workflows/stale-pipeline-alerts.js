@@ -14,11 +14,12 @@
  * no new task is created.
  *
  * Configuration:
- *   STALE_DAYS          — calendar days until a deal is "stale" (task due date)
- *   WARN_BUSINESS_DAYS  — business days of inactivity before task is created (default 1)
- *   TASKS_DB_ID         — VF Tasks Notion database ID
- *   NOTIFY_USER_ID      — Notion user UUID for task assignee
- *   PIPELINES           — per-pipeline DB ID + terminal status list
+ *   STALE_DAYS_BY_PRIORITY       — calendar days until "stale" by priority (High: 3, Medium: 7, Low: 14)
+ *   WARN_BUSINESS_DAYS_BY_PRIORITY — business days of inactivity before task creation (High: 1, Medium: 3, Low: 5)
+ *   SALES_PRIORITY_MAP           — maps Sales pipeline priority values to High/Medium/Low
+ *   TASKS_DB_ID                  — VF Tasks Notion database ID
+ *   NOTIFY_USER_ID               — Notion user UUID for task assignee
+ *   PIPELINES                    — per-pipeline DB ID + terminal status list
  */
 
 import { createWorkflow, createNode, connect } from '../lib/workflow.js';
@@ -27,8 +28,19 @@ import { createWorkflow, createNode, connect } from '../lib/workflow.js';
 // Configuration
 // ---------------------------------------------------------------------------
 
-const STALE_DAYS         = 7;  // calendar days — task due date
-const WARN_BUSINESS_DAYS = 1;  // business days of inactivity to trigger task creation
+// Per-priority staleness thresholds (calendar days until task due date)
+const STALE_DAYS_BY_PRIORITY = { High: 3, Medium: 7, Low: 14 };
+
+// Per-priority business-day inactivity before creating a task
+const WARN_BUSINESS_DAYS_BY_PRIORITY = { High: 1, Medium: 3, Low: 5 };
+
+// Sales pipeline uses different Priority values — normalize to High/Medium/Low
+const SALES_PRIORITY_MAP = {
+  'Hot Prospects': 'High',
+  'Active Projects': 'Medium',
+  'Past Projects': 'Low',
+  'Lost Projects': 'Low',
+};
 
 // VF Tasks database
 const TASKS_DB_ID = '3528f55e5be14e96ad617d07e6b0beaa';
@@ -61,6 +73,9 @@ const PIPELINES = [
 ];
 
 const PIPELINES_JSON = JSON.stringify(PIPELINES);
+const STALE_DAYS_JSON = JSON.stringify(STALE_DAYS_BY_PRIORITY);
+const WARN_DAYS_JSON = JSON.stringify(WARN_BUSINESS_DAYS_BY_PRIORITY);
+const SALES_PRIORITY_MAP_JSON = JSON.stringify(SALES_PRIORITY_MAP);
 
 const NOTION_CREDENTIAL = {
   notionApi: { id: 'lOLrwKiRnGrhZ9xM', name: 'Eve Notion Account' },
@@ -78,8 +93,9 @@ const ANTHROPIC_CREDENTIAL = {
 function buildFilterCode(pipelineIndex) {
   return `
 const PIPELINES = ${PIPELINES_JSON};
-const STALE_DAYS = ${STALE_DAYS};
-const WARN_BUSINESS_DAYS = ${WARN_BUSINESS_DAYS};
+const STALE_DAYS_BY_PRIORITY = ${STALE_DAYS_JSON};
+const WARN_BUSINESS_DAYS_BY_PRIORITY = ${WARN_DAYS_JSON};
+const SALES_PRIORITY_MAP = ${SALES_PRIORITY_MAP_JSON};
 const pipeline = PIPELINES[${pipelineIndex}];
 const terminal = new Set(pipeline.terminalStatuses);
 
@@ -96,6 +112,16 @@ function businessDaysSince(dateStr) {
   return count;
 }
 
+// Normalize priority to High/Medium/Low
+function normalizePriority(rawPriority, pipelineName) {
+  if (pipelineName === 'Sales') {
+    return SALES_PRIORITY_MAP[rawPriority] || 'Medium';
+  }
+  // Partner and Comms already use High/Medium/Low
+  if (['High', 'Medium', 'Low'].includes(rawPriority)) return rawPriority;
+  return 'Medium'; // default for blank/missing
+}
+
 const stale = [];
 for (const item of $input.all()) {
   const j = item.json;
@@ -105,11 +131,16 @@ for (const item of $input.all()) {
   const edited = j.property_last_edited_time || j.property_added || j.property_created_time;
   if (!edited) continue;
 
-  const daysBusiness = businessDaysSince(edited);
-  if (daysBusiness < WARN_BUSINESS_DAYS) continue;
+  const rawPriority = j.property_priority || '';
+  const priority = normalizePriority(rawPriority, pipeline.name);
+  const warnDays = WARN_BUSINESS_DAYS_BY_PRIORITY[priority] || 3;
+  const staleDays = STALE_DAYS_BY_PRIORITY[priority] || 7;
 
-  // Deadline: STALE_DAYS calendar days from last edit
-  const stale_deadline = new Date(new Date(edited).getTime() + STALE_DAYS * 86400000)
+  const daysBusiness = businessDaysSince(edited);
+  if (daysBusiness < warnDays) continue;
+
+  // Deadline: staleDays calendar days from last edit
+  const stale_deadline = new Date(new Date(edited).getTime() + staleDays * 86400000)
     .toISOString().split('T')[0];
 
   stale.push({
@@ -118,6 +149,7 @@ for (const item of $input.all()) {
       pipeline:       pipeline.name,
       deal_name:      j.name || '(untitled)',
       status,
+      priority,
       days_elapsed:   daysBusiness,
       stale_deadline,
       url:            j.url || '',
@@ -374,6 +406,7 @@ for (const deal of dealItems) {
 Pipeline: \${deal.pipeline}
 Deal: \${deal.deal_name}
 Current Stage: \${deal.status}
+Priority: \${deal.priority || 'Medium'}
 Days Without Update: \${deal.days_elapsed}
 
 Suggest ONE specific, actionable next step to advance this deal. 1-2 sentences only. Be direct and concrete.\`;
@@ -385,7 +418,7 @@ Suggest ONE specific, actionable next step to advance this deal. 1-2 sentences o
       Assignee:    { people: [{ id: NOTIFY_USER_ID }] },
       Due:         { date: { start: deal.stale_deadline } },
       Status:      { status: { name: 'Not started' } },
-      Priority:    { select: { name: 'Medium' } },
+      Priority:    { select: { name: deal.priority || 'Medium' } },
       Tags:        { multi_select: [{ name: tag }] },
       [relProp]:   { relation: [{ id: deal.page_id }] },
     },

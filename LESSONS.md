@@ -603,6 +603,22 @@ The webhook subscription receives all page events including `page.deleted`. The 
 ### Known issue: n8n Anthropic node 404 errors
 The `lmChatAnthropic` node has a known bug (as of n8n ~1.113–1.122) where API calls return 404 "resource not found" even with valid API keys. The same key works via curl. If this occurs, the workaround is to replace the `lmChatAnthropic` + `chainLlm` pair with an HTTP Request node calling `POST https://api.anthropic.com/v1/messages` directly, using `authentication: 'predefinedCredentialType'` with `nodeCredentialType: 'anthropicApi'` and an `anthropic-version: 2023-06-01` header.
 
+### Pipeline Priority field values and normalization
+All three pipelines (Sales, Partner, Comms) have a Priority field, but the Sales pipeline uses different values from the other two.
+
+**Partner & Comms pipelines** use a standard scale: `High`, `Medium`, `Low` (some entries are blank).
+
+**Sales pipeline** uses lifecycle categories instead: `Hot Prospects`, `Active Projects`, `Past Projects`, `Lost Projects`. These map to the standard scale as follows:
+
+| Sales Priority value | Normalized priority |
+|----------------------|---------------------|
+| Hot Prospects        | High                |
+| Active Projects      | Medium              |
+| Past Projects        | Low                 |
+| Lost Projects        | Low                 |
+
+`Lost Projects` is historical and redundant with the Status field (which already marks these as `Lost/rejected`). Any automation that reads Priority across pipelines should normalize Sales values to High/Medium/Low using this mapping.
+
 ### Anthropic API key stored as Header Auth credential
 The Anthropic API key on this server is stored as an `httpHeaderAuth` credential (not the native `anthropicApi` type). This means:
 - `lmChatAnthropic` and `chainLlm` nodes **cannot** use it (they require `anthropicApi` credential type)
