@@ -546,20 +546,14 @@ const validateCreateItems = createNode(
   { position: [1792, 400], typeVersion: 2 },
 );
 
-// 15b. Throw on invalid items — malformed data that is neither patch nor create
+// 15b. Stop on invalid items — malformed data that is neither patch nor create
 const throwInvalidItem = createNode(
   'Throw Invalid Item',
-  'n8n-nodes-base.code',
+  'n8n-nodes-base.stopAndError',
   {
-    mode: 'runOnceForEachItem',
-    jsCode: `throw new Error(
-  'Item reached create branch without required fields. ' +
-  'Has anthropicBody: ' + ($json.anthropicBody != null) + ', ' +
-  'Has taskProperties: ' + ($json.taskProperties != null) + '. ' +
-  'Keys: ' + Object.keys($json).join(', ')
-);`,
+    errorMessage: 'Item reached create branch without required fields (missing anthropicBody or taskProperties).',
   },
-  { position: [2016, 600], typeVersion: 2 },
+  { position: [2016, 600], typeVersion: 1 },
 );
 
 // 16. Call Haiku — generate suggested next step via Anthropic API
