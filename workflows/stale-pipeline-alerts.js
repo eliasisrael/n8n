@@ -510,7 +510,7 @@ patchTags.continueOnFail = true;
 // 15. Validate Create Items — ensure false-branch items have the required fields
 const validateCreateItems = createNode(
   'Validate Create Items',
-  'n8n-nodes-base.filter',
+  'n8n-nodes-base.if',
   {
     conditions: {
       options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 1 },
@@ -542,11 +542,25 @@ const validateCreateItems = createNode(
       ],
       combinator: 'and',
     },
-    options: {},
   },
   { position: [1792, 400], typeVersion: 2 },
 );
-validateCreateItems.onError = 'stopWorkflow';
+
+// 15b. Throw on invalid items — malformed data that is neither patch nor create
+const throwInvalidItem = createNode(
+  'Throw Invalid Item',
+  'n8n-nodes-base.code',
+  {
+    mode: 'runOnceForEachItem',
+    jsCode: `throw new Error(
+  'Item reached create branch without required fields. ' +
+  'Has anthropicBody: ' + ($json.anthropicBody != null) + ', ' +
+  'Has taskProperties: ' + ($json.taskProperties != null) + '. ' +
+  'Keys: ' + Object.keys($json).join(', ')
+);`,
+  },
+  { position: [2016, 600], typeVersion: 2 },
+);
 
 // 16. Call Haiku — generate suggested next step via Anthropic API
 const callHaiku = createNode(
@@ -736,6 +750,7 @@ export default createWorkflow('Stale Pipeline Alerts', {
     ifPatchTags,
     patchTags,
     validateCreateItems,
+    throwInvalidItem,
     callHaiku,
     mergeHaikuAndContext,
     finalizeTaskBody,
@@ -772,10 +787,15 @@ export default createWorkflow('Stale Pipeline Alerts', {
     // True branch (output 0): patch missing tags on existing tasks
     connect(ifPatchTags, patchTags, 0, 0),
 
-    // False branch (output 1): validate → Haiku + Create flow
+    // False branch (output 1): validate create items
     connect(ifPatchTags, validateCreateItems, 1, 0),
+
+    // Valid items (output 0): Haiku + Create flow
     connect(validateCreateItems, callHaiku, 0, 0),
     connect(validateCreateItems, mergeHaikuAndContext, 0, 1),
+
+    // Invalid items (output 1): throw error
+    connect(validateCreateItems, throwInvalidItem, 1, 0),
 
     // callHaiku → mergeHaikuAndContext input 0 (AI response)
     connect(callHaiku, mergeHaikuAndContext, 0, 0),
