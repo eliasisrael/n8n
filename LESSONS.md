@@ -54,7 +54,20 @@ The workflow JSON must include `staticData: null`, `pinData: {}`, `meta: { templ
 ## General Patterns
 
 ### Use Filter nodes instead of IF nodes for simple validation gates
-When you only need to drop records that fail a check (no logic needed on the failing branch), use a Filter node. An IF node with an empty false branch is wasteful.
+When you only need to drop records that fail a check (no logic needed on the failing branch), use a Filter node. An IF node with an empty false branch is wasteful. Note: Filter nodes **silently drop** non-matching items — they don't error. The `onError` setting only fires on expression evaluation failures, not on items that fail the conditions. If you need to raise an error on invalid data, use an IF node with a Stop and Error node on the false branch instead (see below).
+
+### Validate data shape defensively with IF + Stop and Error
+When a branch assumes items have a specific shape (e.g., `anthropicBody` and `taskProperties` for task creation), don't assume — validate. Use an IF node to check the required fields exist and are non-empty (using the `exists` + `notEmpty` AND pattern), then route failures to a **Stop and Error** node (`n8n-nodes-base.stopAndError`, v1). This halts the workflow and triggers the error workflow so malformed items are surfaced, not silently swallowed or sent to APIs with undefined data.
+
+```js
+createNode('Throw Invalid Item', 'n8n-nodes-base.stopAndError', {
+  errorMessage: 'Item missing required fields (expected anthropicBody and taskProperties).',
+}, { position: [x, y], typeVersion: 1 });
+```
+
+**Why not a Filter node?** Filter silently drops non-matching items — that's not an error condition, it's quiet data loss. `onError: 'stopWorkflow'` on a Filter only fires on expression evaluation errors, not on items that fail the conditions.
+
+**Why not a Code node with `throw`?** The Stop and Error node is n8n's purpose-built tool for halting with a custom error. It's cleaner and shows the correct error icon on the canvas.
 
 ### Use IF nodes to skip expensive operations when the pipeline is empty
 When a workflow branch may produce zero items (e.g., all items filtered out), use an IF node to check for a sentinel value (like `_empty: true`) and bypass expensive operations (API calls, LLM invocations) on the false branch. This is cheaper and faster than sending dummy requests to external APIs. Pattern: Code node returns `{ _empty: true }` when empty → IF node checks `_empty notEquals true` → true branch proceeds normally, false branch skips directly to the next convergence point.
