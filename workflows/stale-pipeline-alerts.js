@@ -448,15 +448,34 @@ const ifPatchTags = createNode(
   'n8n-nodes-base.if',
   {
     conditions: {
-      options: { typeValidation: 'strict' },
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 1 },
       conditions: [
         {
           id: 'patch-tags-check',
-          leftValue: '={{ $json._patchTags === true }}',
+          leftValue: '={{ $json._patchTags }}',
+          rightValue: '',
+          operator: { type: 'boolean', operation: 'exists', singleValue: true },
+        },
+        {
+          id: 'patch-tags-true',
+          leftValue: '={{ $json._patchTags }}',
           rightValue: '',
           operator: { type: 'boolean', operation: 'true', singleValue: true },
         },
+        {
+          id: 'patch-body-exists',
+          leftValue: '={{ $json.patchBody }}',
+          rightValue: '',
+          operator: { type: 'object', operation: 'exists', singleValue: true },
+        },
+        {
+          id: 'patch-body-not-empty',
+          leftValue: '={{ $json.patchBody }}',
+          rightValue: '',
+          operator: { type: 'object', operation: 'notEmpty', singleValue: true },
+        },
       ],
+      combinator: 'and',
     },
   },
   { position: [1568, 400], typeVersion: 2 },

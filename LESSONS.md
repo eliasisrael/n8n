@@ -27,15 +27,22 @@ The workflow JSON must include `staticData: null`, `pinData: {}`, `meta: { templ
   - `startsWith` / `endsWith` (and their `not` variants)
   - `regex` / `notRegex`
 - Operators with `singleValue: true` (like `exists`, `notEmpty`) don't need a `rightValue`
-- **Boolean "is true" checks**: n8n's built-in boolean operators (`operation: 'equals'` and `operation: 'true'`) are both unreliable when the field may be undefined/missing — they can evaluate to true for undefined values. The safe pattern is to do the check in the expression itself using strict equality, then test the result with the boolean `true` operator:
+- **Boolean "is true" checks**: n8n's boolean operators (`operation: 'equals'`, `operation: 'true'`) are unreliable when the field may be undefined/missing — they can evaluate to true for undefined values. Even wrapping the expression in `=== true` at the expression level is not sufficient. The reliable pattern is to use **multiple AND conditions** that first test field existence, then test the value:
   ```js
-  {
-    leftValue: '={{ $json.myField === true }}',
-    rightValue: '',
-    operator: { type: 'boolean', operation: 'true', singleValue: true },
+  conditions: {
+    options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 1 },
+    conditions: [
+      // 1. Field exists
+      { leftValue: '={{ $json.myField }}', rightValue: '',
+        operator: { type: 'boolean', operation: 'exists', singleValue: true } },
+      // 2. Field is true
+      { leftValue: '={{ $json.myField }}', rightValue: '',
+        operator: { type: 'boolean', operation: 'true', singleValue: true } },
+    ],
+    combinator: 'and',
   }
   ```
-  This guarantees `false` for undefined, null, or any non-boolean value. Same approach for "is false": `leftValue: '={{ $json.myField === false }}'`
+  The `exists` check gates the `true` check — if the field is missing, the AND short-circuits to false. For object fields (e.g., a JSON body), use `type: 'object'` with `operation: 'exists'` + `operation: 'notEmpty'` to confirm the field is present and non-empty
 
 ### Code node execution mode matters
 - `runOnceForAllItems` processes all items in one execution; use `$('Node').first().json` and `$input.first().json`; return an array `[{ json: ... }]`
