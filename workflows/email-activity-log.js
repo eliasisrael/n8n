@@ -45,7 +45,7 @@ const OUTLOOK_CREDENTIAL = {
 };
 
 const ANTHROPIC_CREDENTIAL = {
-  anthropicApi: { id: 'JKGmltAERvaKJ6OS', name: 'Anthropic API Key' },
+  httpHeaderAuth: { id: 'JKGmltAERvaKJ6OS', name: 'Anthropic API Key' },
 };
 
 // ---------------------------------------------------------------------------
@@ -600,8 +600,8 @@ const summarizeEmail = createNode(
   {
     method: 'POST',
     url: 'https://api.anthropic.com/v1/messages',
-    authentication: 'predefinedCredentialType',
-    nodeCredentialType: 'anthropicApi',
+    authentication: 'genericCredentialType',
+    genericAuthType: 'httpHeaderAuth',
     sendHeaders: true,
     headerParameters: {
       parameters: [

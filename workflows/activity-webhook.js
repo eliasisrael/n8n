@@ -25,7 +25,8 @@ if (!record) {
 }
 
 // Get the activity date — use it as the "Last Activity" value
-const activityDate = record.property_date || new Date().toISOString();
+const rawDate = record.property_date;
+const activityDate = (rawDate && typeof rawDate === 'object' ? rawDate.start : rawDate) || new Date().toISOString();
 
 // Collect related contact page IDs
 const contactIds = record.property_contact || [];

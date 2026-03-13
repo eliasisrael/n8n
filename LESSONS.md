@@ -100,6 +100,16 @@ The workflow JSON must include `staticData: null`, `pinData: {}`, `meta: { templ
 - **`$('NodeName')` back-references are unreliable in the Code node sandbox**: The Code node's JavaScript sandbox may not support `$('NodeName').all()` or `$('NodeName').first()` the same way n8n's expression engine does. Calling `$('Receive Contact').first()` produced `"Property first does not exist on type"`, and `$('Receive Contact').all()` silently returned empty data. **Workaround**: use an n8n **Merge node** (v3, `combineByPosition`) to pair the original data with the downstream data before the Code node, so `$input.all()` contains everything the Code node needs — no back-references required
 - **When item pairing breaks, use a Merge node**: Instead of trying to reconstruct the pairing with `$('Trigger Node').all()` in a Code node (which may fail silently), use an n8n Merge node to explicitly combine the two data streams. Wire the original data (e.g., from a Filter node) into the Merge node's second input alongside the transformed data (e.g., from an IF TRUE branch) on the first input
 
+## n8n HTTP Request Node — Credentials
+
+### Anthropic API uses `httpHeaderAuth`, not `anthropicApi`
+- The Anthropic API key credential on our server is registered as a **generic HTTP Header Auth** credential, not the n8n built-in `anthropicApi` type
+- Use `authentication: 'genericCredentialType'` + `genericAuthType: 'httpHeaderAuth'` (NOT `authentication: 'predefinedCredentialType'` + `nodeCredentialType: 'anthropicApi'`)
+- Credential object key must be `httpHeaderAuth`, not `anthropicApi`
+- Reference: `stale-pipeline-alerts.js` lines 84-86, 577-578
+
+---
+
 ## General Patterns
 
 ### Use Filter nodes instead of IF nodes for simple validation gates

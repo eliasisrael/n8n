@@ -109,6 +109,11 @@ const TOPICS = [
     databaseId: '3178ebaf-15ee-803f-bf71-e30bfc97b2b8',
     endpoints: ['adapter-activities'],
   },
+  {
+    topic: 'notion-vf-notes',
+    databaseId: '28b58533-efd7-4018-a8d5-665b6755b90d',
+    endpoints: ['adapter-vf-notes'],
+  },
 ];
 
 // ---------------------------------------------------------------------------

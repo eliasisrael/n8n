@@ -39,7 +39,12 @@
       "Bash(__NEW_LINE_eb9853b3120b3965__ API_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI5MjVmNjIwNC1kZDJlLTQyMDQtOTkyYi00MGYxMzQyN2I0MDMiLCJpc3MiOiJuOG4iLCJhdWQiOiJwdWJsaWMtYXBpIiwiaWF0IjoxNzcyMjAzMzUxLCJleHAiOjE3NzQ3NTY4MDB9.eWSCd6A_bBEiJyw1HlPVflDLS6JM4EDPnfoj7FTY1pw' __NEW_LINE_eb9853b3120b3965__ curl -s -H \"X-N8N-API-KEY: $API_KEY\" \"https://n8n.vennfactory.com/api/v1/workflows/XfO5Zg1zn6A4vhD6\")",
       "Bash(jq '.nodes[] | select\\(.name == \"\"Load Referenced Page\"\"\\) | {name, type, parameters}' /Users/eli/Documents/N8N/server/notion-webhook-router-live.json)",
       "Bash(__NEW_LINE_a77583cc6e7c5ff7__ API_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI5MjVmNjIwNC1kZDJlLTQyMDQtOTkyYi00MGYxMzQyN2I0MDMiLCJpc3MiOiJuOG4iLCJhdWQiOiJwdWJsaWMtYXBpIiwiaWF0IjoxNzcyMjAzMzUxLCJleHAiOjE3NzQ3NTY4MDB9.eWSCd6A_bBEiJyw1HlPVflDLS6JM4EDPnfoj7FTY1pw' __NEW_LINE_a77583cc6e7c5ff7__ curl -v -H \"x-n8n-api-key: $API_KEY\" \"https://n8n.vennfactory.com/api/v1/workflows/XfO5Zg1zn6A4vhD6\")",
-      "Bash(jq '.nodes[] | select\\(.name == \"\"Merge\"\"\\)' /Users/eli/Documents/N8N/server/notion-webhook-router-live.json)"
+      "Bash(jq '.nodes[] | select\\(.name == \"\"Merge\"\"\\)' /Users/eli/Documents/N8N/server/notion-webhook-router-live.json)",
+      "Bash(ls -la /Users/eli/Documents/N8N/*.md)",
+      "Bash(jq '.nodes[1].parameters.rules.values[] | select\\(.outputKey == \"\"Activities\"\" or .outputKey == \"\"Engagements\"\"\\) | {outputKey, databaseId: .conditions.conditions[0].rightValue}' /Users/eli/Documents/N8N/server/notion-webhook-router.json)",
+      "Bash(grep \"notion-activities\" /Users/eli/Documents/N8N/*.js)",
+      "Bash(jq \".nodes[] | select\\(.type == \"\"n8n-nodes-base.respondToWebhook\"\" or .name | contains\\(\"\"Format\"\"\\)\\) | {name, type}\" /Users/eli/Documents/N8N/server/notion-webhook-router.json)",
+      "Bash(source /Users/eli/Documents/N8N/.env)"
     ]
   }
 }
