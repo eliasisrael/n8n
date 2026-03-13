@@ -1,6 +1,7 @@
 node_modules/
 output/
 server/
+samples/
 .env
 .DS_Store
 *.csv
