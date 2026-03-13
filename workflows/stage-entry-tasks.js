@@ -76,7 +76,6 @@ const STAGE_TASKS = {
   '35d10c83-92e6-4ce2-adc2-8c03e2c97480': {
     'Lead':      { taskName: 'Research media opportunity: {deal}', dueDays: 3, priority: 'Medium' },
     'Proposed':  { taskName: 'Follow up on pitch: {deal}',        dueDays: 5, priority: 'Medium' },
-    'Confirmed': { taskName: 'Prepare appearance brief: {deal}',  dueDays: 7, priority: 'Medium' },
   },
 };
 

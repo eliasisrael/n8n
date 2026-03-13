@@ -4,10 +4,25 @@ Hard-won knowledge from building and importing n8n workflows. Always check this 
 
 ---
 
+## n8n API
+
+### Workflow activation/deactivation
+- `POST /api/v1/workflows/{id}/activate` — activates a workflow (registers triggers/webhooks)
+- `POST /api/v1/workflows/{id}/deactivate` — deactivates a workflow
+- Both return the full workflow object with the updated `active` field
+- The `push-workflows.js` PUT endpoint does NOT change activation state — use these dedicated endpoints
+- Scripts: `activate-workflows.js` and `deactivate-workflows.js` accept `--workflow <name>` or activate/deactivate all adapter workflows by default
+
+---
+
 ## n8n JSON Import Compatibility
 
 ### Workflow envelope must include extra fields
 The workflow JSON must include `staticData: null`, `pinData: {}`, `meta: { templateCredsSetupCompleted: true }`, and tags as `{ name: "..." }` objects (not plain strings). Without these, n8n may reject the file or behave unexpectedly on import.
+
+### Execute Workflow node requires typeVersion 1.2
+- `n8n-nodes-base.executeWorkflow` with `typeVersion: 1` shows "This workflow is out of date" in the n8n UI
+- Use `typeVersion: 1.2` for the current version
 
 ### Execute Sub-workflow Trigger (v1.1) parameter names
 - The input mode selector is **`inputSource`** (not `inputDataMode`)
@@ -636,15 +651,22 @@ The webhook subscription receives all page events including `page.deleted`. The 
 2. **Data mismatch bounce**: Notion had `Email Marketing: null` while Mailchimp had `status: subscribed`. The Mailchimp→Notion sync correctly wrote `Subscribed` back, but that triggered another Notion webhook cycle
 3. **Notion Upsert includes all non-null fields in PATCH**, not just changed ones (cosmetic — doesn't cause the loop but adds noise to webhook events)
 
-**Proposed debounce approach**: Use **Upstash Redis free tier** (500K commands/month, REST API) as a lightweight dedup cache in the Notion Router:
+**Proposed debounce + fan-out approach**: Combine **Upstash Redis** (dedup gate) with **QStash** (delayed delivery + pub/sub fan-out):
+
 1. After webhook validation, extract `entity.id` (page_id)
-2. HTTP Request to Upstash: `SET debounce:page:{page_id} 1 EX 10 NX` (set-if-not-exists, 10-second TTL)
-3. If SET returned OK → first event for this page → proceed with routing
-4. If SET returned null → duplicate within 10 seconds → respond 200 and stop
+2. HTTP Request to Upstash Redis: `SET debounce:page:{page_id} 1 EX 10 NX` (set-if-not-exists, 10-second TTL)
+3. If SET returned null → duplicate within 10 seconds → respond 200 and stop
+4. If SET returned OK → first event for this page → publish to QStash URL Group (topic) with a **10-second delay**
+5. After the delay, QStash delivers the message to all subscriber webhook endpoints
+6. Each subscriber fetches the **current** page state from Notion at execution time (not the stale payload from 10 seconds ago)
 
-This requires no paid n8n features, no community nodes, and stays within Upstash's free tier. The REST API is callable directly from n8n HTTP Request nodes.
+**Why the delay matters**: The Redis gate passes the first event in a burst and drops the rest. The 10-second QStash delay lets the burst fully settle before any subscriber acts. Since subscribers read fresh Notion data on delivery, it doesn't matter that the triggering event was the first rather than the last.
 
-**Status**: Not yet implemented. Recorded for future work.
+**Why QStash for fan-out**: Currently the router uses a Switch node + Execute Workflow nodes to dispatch to sub-workflows. Adding a new subscriber requires patching the router. With QStash URL Groups, each sub-workflow registers its own webhook endpoint as a topic subscriber — the router just publishes to the topic. Adding/removing subscribers requires no router changes.
+
+Both services are available via Upstash (credentials already in `.env`). Redis is the dedup gate (one SET call per event), QStash handles delayed delivery and fan-out. No polling anywhere.
+
+**Status**: Not yet implemented. Planned as part of the activity tracking + router refactor work.
 
 ---
 

@@ -66,7 +66,7 @@ const PIPELINES = [
   {
     name: 'Comms',
     dbId: '35d10c8392e64ce2adc28c03e2c97480',
-    terminalStatuses: ['Completed/Captured', 'Rejected/Cancelled', 'VF delivered'],
+    terminalStatuses: ['Completed/Captured', 'Rejected/Cancelled', 'VF delivered', 'Confirmed'],
     tasksRelationProp: 'Comms pipeline',
     tag: 'VF marketing',
   },
@@ -112,6 +112,18 @@ function businessDaysSince(dateStr) {
   return count;
 }
 
+// Add N business days (Mon-Fri) to a date
+function addBusinessDays(startISO, days) {
+  const d = new Date(startISO);
+  let remaining = days;
+  while (remaining > 0) {
+    d.setDate(d.getDate() + 1);
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) remaining--;
+  }
+  return d.toISOString().split('T')[0];
+}
+
 // Normalize priority to High/Medium/Low
 function normalizePriority(rawPriority, pipelineName) {
   if (pipelineName === 'Sales') {
@@ -139,9 +151,8 @@ for (const item of $input.all()) {
   const daysBusiness = businessDaysSince(edited);
   if (daysBusiness < warnDays) continue;
 
-  // Deadline: staleDays calendar days from last edit
-  const stale_deadline = new Date(new Date(edited).getTime() + staleDays * 86400000)
-    .toISOString().split('T')[0];
+  // Deadline: staleDays business days from today
+  const stale_deadline = addBusinessDays(new Date().toISOString(), staleDays);
 
   stale.push({
     json: {
