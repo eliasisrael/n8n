@@ -9,11 +9,11 @@ export default createAdapter({
   fieldMappings: [
     { name: 'id', value: '={{ $json.id }}' },
     { name: 'Name', value: '={{ $json.name }}' },
-    { name: 'Papers', value: '={{ $json.property_papers }}' },
+    { name: 'Papers', value: '={{ $json.property_papers }}', type: 'array' },
     { name: 'Birthday', value: '={{ $json.property_birthday }}' },
     { name: 'Contact form msg', value: '={{ $json.property_contact_form_msg }}' },
     { name: 'Country', value: '={{ $json.property_country }}' },
-    { name: 'Client DB', value: '={{ $json.property_client_db }}' },
+    { name: 'Client DB', value: '={{ $json.property_client_db }}', type: 'array' },
     { name: 'Last name', value: '={{ $json.property_last_name }}' },
     { name: 'Street address', value: '={{ $json.property_street_address }}' },
     { name: 'Company Name', value: '={{ $json.property_company_name }}' },
@@ -26,6 +26,6 @@ export default createAdapter({
     { name: 'First name', value: '={{ $json.property_first_name }}' },
     { name: 'State', value: '={{ $json.property_state }}' },
     { name: 'Identifier', value: '={{ $json.property_identifier }}' },
-    { name: 'Tags', value: '={{ $json.property_tags }}' },
+    { name: 'Tags', value: '={{ $json.property_tags }}', type: 'array' },
   ],
 });

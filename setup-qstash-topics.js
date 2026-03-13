@@ -2,10 +2,11 @@
  * setup-qstash-topics.js
  *
  * Creates QStash URL Groups (topics) and registers adapter webhook URLs as endpoints.
- * One topic per Notion database, each with its adapter's webhook URL.
+ * Also writes database-ID-to-topic-name mappings to Redis (dbtopic:{db_id} → topic_name)
+ * so the router can look up the correct topic at runtime without a hardcoded map.
  *
  * Usage:
- *   node setup-qstash-topics.js             # create topics and register endpoints
+ *   node setup-qstash-topics.js             # create topics, register endpoints, write Redis mappings
  *   node setup-qstash-topics.js --dry-run   # preview without applying
  */
 
@@ -23,10 +24,16 @@ function stripQuotes(s) {
 
 const QSTASH_URL = stripQuotes(env.QSTASH_URL);
 const QSTASH_TOKEN = stripQuotes(env.QSTASH_TOKEN);
+const UPSTASH_URL = stripQuotes(env.UPSTASH_REDIS_REST_URL);
+const UPSTASH_TOKEN = stripQuotes(env.UPSTASH_REDIS_REST_TOKEN);
 const N8N_BASE_URL = env.N8N_BASE_URL;
 
 if (!QSTASH_URL || !QSTASH_TOKEN) {
   console.error('Missing QSTASH_URL or QSTASH_TOKEN in .env');
+  process.exit(1);
+}
+if (!UPSTASH_URL || !UPSTASH_TOKEN) {
+  console.error('Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN in .env');
   process.exit(1);
 }
 if (!N8N_BASE_URL) {
@@ -39,6 +46,8 @@ const dryRun = process.argv.includes('--dry-run');
 // ---------------------------------------------------------------------------
 // Topic → Adapter mapping
 // ---------------------------------------------------------------------------
+// Database IDs are the ground-truth values from the router's Switch node
+// (these are what body.data.parent.id contains in webhook payloads).
 const TOPICS = [
   {
     topic: 'notion-contacts',
@@ -47,12 +56,12 @@ const TOPICS = [
   },
   {
     topic: 'notion-clients',
-    databaseId: '39b8f7e7-a5a2-4776-b78e-7ab77e8e5313',
+    databaseId: '39b8f7e7-362f-4121-8389-4d9f5c26c1d4',
     endpoints: ['adapter-clients'],
   },
   {
     topic: 'notion-partners',
-    databaseId: '642b44e9-f325-45d7-87e7-f83a7e4c9b40',
+    databaseId: '642b44e9-1363-4765-aaaf-702a708d6812',
     endpoints: ['adapter-partners'],
   },
   {
@@ -62,37 +71,37 @@ const TOPICS = [
   },
   {
     topic: 'notion-downloads',
-    databaseId: '1148ebaf-15ee-80ba-889c-f2c54aa25e84',
+    databaseId: '1148ebaf-15ee-8079-9917-c5158470b3e0',
     endpoints: ['adapter-downloads'],
   },
   {
     topic: 'notion-testimonials',
-    databaseId: 'aa848058-52f5-409f-8680-93024b34786a',
+    databaseId: 'aa848058-0b30-4782-bcc1-f56be736399e',
     endpoints: ['adapter-testimonials'],
   },
   {
     topic: 'notion-engagements',
-    databaseId: '1c68ebaf-15ee-8073-be88-e8b8debc32f6',
+    databaseId: '1c68ebaf-15ee-8062-80b2-fcb378557689',
     endpoints: ['adapter-engagements'],
   },
   {
     topic: 'notion-products',
-    databaseId: '1d48ebaf-15ee-80b2-8e6f-ca20d5ddd6c7',
+    databaseId: '1d48ebaf-15ee-80c4-a8e7-d99c0596d520',
     endpoints: ['adapter-products'],
   },
   {
     topic: 'notion-endorsements',
-    databaseId: '3028ebaf-15ee-80dc-89c3-e26f1f501ebe',
+    databaseId: '3028ebaf-15ee-8023-82ae-c94c75e1aa4d',
     endpoints: ['adapter-endorsements'],
   },
   {
     topic: 'notion-sales-pipeline',
-    databaseId: '2ed21e43-3c29-4553-bdee-4a02a5bcbb4c',
+    databaseId: '2ed21e43-d3a5-45f4-8cf4-a2a8f61a264f',
     endpoints: ['adapter-sales-pipeline'],
   },
   {
     topic: 'notion-partner-pipeline',
-    databaseId: '457cfa4c-93f4-4d10-93dc-2efbfa3e9a02',
+    databaseId: '457cfa4c-123b-4718-a7d3-c8bf7ea4a27e',
     endpoints: ['adapter-partner-pipeline'],
   },
   {
@@ -106,15 +115,21 @@ const TOPICS = [
 // Main
 // ---------------------------------------------------------------------------
 
-console.log('QStash Topic Setup');
+console.log('QStash Topic + Redis Mapping Setup');
 console.log(`  QStash: ${QSTASH_URL}`);
+console.log(`  Redis:  ${UPSTASH_URL}`);
 console.log(`  n8n:    ${N8N_BASE_URL}`);
 console.log(`  Topics: ${TOPICS.length}`);
 if (dryRun) console.log('  Mode:   DRY RUN\n');
 else console.log('');
 
-let created = 0;
-let errors = 0;
+// ---------------------------------------------------------------------------
+// 1. Register QStash URL Groups
+// ---------------------------------------------------------------------------
+console.log('=== QStash URL Groups ===\n');
+
+let topicOk = 0;
+let topicErr = 0;
 
 for (const { topic, databaseId, endpoints } of TOPICS) {
   const webhookUrls = endpoints.map(path => `${N8N_BASE_URL}/webhook/${path}`);
@@ -125,13 +140,11 @@ for (const { topic, databaseId, endpoints } of TOPICS) {
   }
 
   if (dryRun) {
-    created++;
+    topicOk++;
     continue;
   }
 
   try {
-    // POST /v2/topics/{name}/endpoints — creates the topic if it doesn't exist
-    // and adds/updates the endpoint URLs
     const res = await fetch(`${QSTASH_URL}/v2/topics/${topic}/endpoints`, {
       method: 'POST',
       headers: {
@@ -146,18 +159,66 @@ for (const { topic, databaseId, endpoints } of TOPICS) {
     if (!res.ok) {
       const body = await res.text();
       console.error(`    ERROR (${res.status}): ${body}`);
-      errors++;
+      topicErr++;
       continue;
     }
 
     console.log(`    OK`);
-    created++;
+    topicOk++;
   } catch (err) {
     console.error(`    ERROR: ${err.message}`);
-    errors++;
+    topicErr++;
   }
 }
 
-console.log(`\nDone. ${created} topic(s) configured, ${errors} error(s).`);
+console.log(`\n  ${topicOk} topic(s) configured, ${topicErr} error(s).\n`);
+
+// ---------------------------------------------------------------------------
+// 2. Write Redis dbtopic:{db_id} → topic_name mappings
+// ---------------------------------------------------------------------------
+console.log('=== Redis Topic Mappings ===\n');
+
+let redisOk = 0;
+let redisErr = 0;
+
+for (const { topic, databaseId } of TOPICS) {
+  const key = `dbtopic:${databaseId}`;
+  console.log(`  SET ${key} → ${topic}`);
+
+  if (dryRun) {
+    redisOk++;
+    continue;
+  }
+
+  try {
+    const res = await fetch(`${UPSTASH_URL}/set/${encodeURIComponent(key)}/${encodeURIComponent(topic)}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${UPSTASH_TOKEN}`,
+      },
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      console.error(`    ERROR (${res.status}): ${body}`);
+      redisErr++;
+      continue;
+    }
+
+    console.log(`    OK`);
+    redisOk++;
+  } catch (err) {
+    console.error(`    ERROR: ${err.message}`);
+    redisErr++;
+  }
+}
+
+console.log(`\n  ${redisOk} mapping(s) written, ${redisErr} error(s).`);
+
+// ---------------------------------------------------------------------------
+// Summary
+// ---------------------------------------------------------------------------
+const totalErrors = topicErr + redisErr;
+console.log(`\nDone. ${topicOk} topics, ${redisOk} Redis mappings, ${totalErrors} error(s).`);
 if (dryRun) console.log('(dry run — no changes made)');
-if (errors > 0) process.exit(1);
+if (totalErrors > 0) process.exit(1);

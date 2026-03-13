@@ -15,6 +15,40 @@ Hard-won knowledge from building and importing n8n workflows. Always check this 
 
 ---
 
+## n8n Canvas Node Positioning
+
+### General principles
+- n8n canvas coordinates are `[x, y]` where **x increases rightward** and **y increases downward**
+- Nodes on the same logical step should share the same x coordinate; sequential steps increase x
+- Typical horizontal spacing between sequential nodes: **200–250px**
+- Don't place all nodes on a single y line — use vertical offsets to convey branching and hierarchy
+
+### Layout patterns for webhook routers
+- **Validation spine** (webhook → signature check → filters): keep on a single y level, tight x spacing (~224px)
+- **Processing chain** (code → HTTP → code): can step y down slightly (+72px) to visually distinguish from the validation spine, then step back up at the next decision point
+- **Decision/fan-out nodes** (IF → downstream): step y down progressively (e.g., 528 → 624 → 696) to create a cascading staircase that shows the flow direction
+- **Parallel branches** (e.g., Execution Data): same x as the node they branch from, offset y by ~-192 (above)
+- **Terminal nodes** (Success/Error respond): align at the **same x** coordinate, spread vertically (e.g., y=192 for success, y=816 for error) so they form a clear vertical pair at the right edge of the workflow
+- **Error paths**: position below the main flow line; success paths above
+
+### Hardcode positions in patch scripts
+- When patching a live workflow, **hardcode absolute positions** rather than computing relative offsets. Relative layouts drift across re-runs as anchor nodes move.
+- After manually adjusting layout in the n8n UI, fetch the live positions with the API and copy them into the patch script so re-runs are idempotent.
+
+### Reference: Notion Webhook Router layout
+```
+y=192  ·························Success: Respond (1136,192)
+y=304  ·Sticky Note (-544,304)
+y=432  ·························Execution Data (688,432)
+y=528  Webhook→Sig→Trust→Skip→IsDB?→···Restore (464,528)
+y=600  ·························Build→Redis (16–240,600)
+y=624  ·························IsRoutable (688,624)
+y=696  ·························Publish (912,696)
+y=816  ·························Error: Respond (1136,816)
+```
+
+---
+
 ## n8n JSON Import Compatibility
 
 ### Workflow envelope must include extra fields
