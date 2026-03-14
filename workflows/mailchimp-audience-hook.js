@@ -54,6 +54,17 @@ if (!MAILCHIMP_DC) {
   throw new Error('Missing MAILCHIMP_DC in .env');
 }
 
+// Upstash Redis for maintenance mode gate.
+function stripQuotes(s) {
+  if (s && s.startsWith('"') && s.endsWith('"')) return s.slice(1, -1);
+  return s;
+}
+const UPSTASH_URL = stripQuotes(process.env.UPSTASH_REDIS_REST_URL);
+const UPSTASH_TOKEN = stripQuotes(process.env.UPSTASH_REDIS_REST_TOKEN);
+if (!UPSTASH_URL || !UPSTASH_TOKEN) {
+  throw new Error('Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN in .env');
+}
+
 // Webhook path — shared by both GET and POST nodes.
 const WEBHOOK_PATH = '6a90994c-ebb0-4fb0-be82-010bd6b82745';
 
@@ -94,6 +105,68 @@ const webhook = createNode(
 );
 webhook.webhookId = WEBHOOK_PATH;
 
+// Maintenance mode gate: HTTP Request to Redis, then IF to branch.
+// The HTTP Request replaces $json with the Redis response, so downstream
+// nodes use $('Mailchimp Webhook (POST)').item.json to get original data.
+const maintenanceCheck = createNode(
+  'Maintenance Check',
+  'n8n-nodes-base.httpRequest',
+  {
+    method: 'GET',
+    url: `${UPSTASH_URL}/GET/n8n:maintenance`,
+    sendHeaders: true,
+    headerParameters: {
+      parameters: [{ name: 'Authorization', value: `Bearer ${UPSTASH_TOKEN}` }],
+    },
+    options: {},
+  },
+  { position: [150, 0], typeVersion: 4.2 },
+);
+
+const ifMaintenance = createNode(
+  'If Maintenance?',
+  'n8n-nodes-base.if',
+  {
+    conditions: {
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
+      conditions: [{
+        id: crypto.randomUUID(),
+        leftValue: '={{ $json.result }}',
+        rightValue: '',
+        operator: { type: 'string', operation: 'notEmpty', singleValue: true },
+      }],
+      combinator: 'and',
+    },
+    options: {},
+  },
+  { position: [350, 0], typeVersion: 2 },
+);
+
+// When in maintenance mode, respond 200 immediately.
+const respondMaintenance = createNode(
+  'Respond OK (Maintenance)',
+  'n8n-nodes-base.respondToWebhook',
+  {
+    respondWith: 'noData',
+    options: { responseCode: 200 },
+  },
+  { position: [450, -150], typeVersion: 1.5 },
+);
+
+// Restore original webhook payload after the HTTP Request replaced $json.
+// Uses back-reference to the webhook node to get the original data.
+const restoreEvent = createNode(
+  'Restore Event',
+  'n8n-nodes-base.code',
+  {
+    mode: 'runOnceForEachItem',
+    jsCode: `\
+const orig = $('Mailchimp Webhook (POST)').item.json;
+return { json: orig };`,
+  },
+  { position: [500, 0], typeVersion: 2 },
+);
+
 // Validate the shared secret from the query string (?secret=...).
 const validateSecret = createNode(
   'Validate Secret',
@@ -108,7 +181,7 @@ $input.item.json.validSecret = (receivedSecret === expectedSecret);
 
 return $input.item;`,
   },
-  { position: [208, 0], typeVersion: 2 },
+  { position: [700, 0], typeVersion: 2 },
 );
 
 // Gate: drop requests with invalid or missing secrets.
@@ -139,7 +212,7 @@ const filterValidSecret = createNode(
     },
     options: {},
   },
-  { position: [416, 0], typeVersion: 2.2 },
+  { position: [750, 0], typeVersion: 2.2 },
 );
 
 // Map the Mailchimp event payload into the contact shape expected by the
@@ -241,7 +314,7 @@ for (const item of items) {
 
 return results;`,
   },
-  { position: [624, 0], typeVersion: 2 },
+  { position: [950, 0], typeVersion: 2 },
 );
 
 // Drop records with no email — avoids an unnecessary sub-workflow call.
@@ -272,7 +345,7 @@ const hasEmail = createNode(
     },
     options: {},
   },
-  { position: [832, 0], typeVersion: 2.2 },
+  { position: [1150, 0], typeVersion: 2.2 },
 );
 
 // Call the Notion Master Contact Upsert sub-workflow.
@@ -289,7 +362,7 @@ const upsertContact = createNode(
     },
     options: {},
   },
-  { position: [1040, 0], typeVersion: 1.2 },
+  { position: [1350, 0], typeVersion: 1.2 },
 );
 
 // Respond 200 to Mailchimp only after the upsert succeeds.
@@ -304,7 +377,7 @@ const respondOk = createNode(
       responseCode: 200,
     },
   },
-  { position: [1248, 0], typeVersion: 1.5 },
+  { position: [1550, 0], typeVersion: 1.5 },
 );
 
 // ---------------------------------------------------------------------------
@@ -313,11 +386,20 @@ const respondOk = createNode(
 
 export default createWorkflow('Mailchimp Audience Hook', {
   nodes: [
-    webhookGet, webhook, validateSecret, filterValidSecret,
+    webhookGet, webhook,
+    maintenanceCheck, ifMaintenance, respondMaintenance, restoreEvent,
+    validateSecret, filterValidSecret,
     mapToContact, hasEmail, upsertContact, respondOk,
   ],
   connections: [
-    connect(webhook, validateSecret),
+    // Maintenance gate
+    connect(webhook, maintenanceCheck),
+    connect(maintenanceCheck, ifMaintenance),
+    connect(ifMaintenance, respondMaintenance, 0, 0),    // true (maintenance on) → respond 200
+    connect(ifMaintenance, restoreEvent, 1, 0),          // false (normal) → restore original payload
+    connect(restoreEvent, validateSecret),
+
+    // Normal processing
     connect(validateSecret, filterValidSecret),
     connect(filterValidSecret, mapToContact),
     connect(mapToContact, hasEmail),

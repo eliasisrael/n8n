@@ -607,6 +607,8 @@ Key details:
 - `limitPagesFetched: true` enables the `maxRequests` cap
 - `requestInterval` is in milliseconds (350ms ≈ 3 req/s for Notion API compliance)
 - `paginationMode` values: `"updateAParameterInEachRequest"` (cursor/offset), `"responseContainsNextURL"` (link-based)
+- **Do NOT put query parameters in the URL string** when using `updateAParameterInEachRequest` with `type: 'queryString'`. The pagination engine adds/replaces query string parameters, but if the same parameter (e.g., `offset`) is also hardcoded in the URL string, the URL version takes precedence and pagination never advances (the node detects 5 identical responses and stops). Instead, use `sendQuery: true` with `queryParameters` to set initial values, so the pagination engine can properly replace them.
+- **Do NOT duplicate pagination-managed parameters in `queryParameters`**. If the pagination config manages a parameter (e.g., `offset` via `type: 'queryString'`), do NOT also set it in the node's `queryParameters`. The initial request will use `queryParameters`, but subsequent requests may conflict. Only put non-paginated parameters (e.g., `count`) in `queryParameters`; let the pagination config be the sole owner of the paginated parameter.
 
 ### Code nodes CANNOT have credentials — use HTTP Request nodes for authenticated API calls
 The `n8n-nodes-base.code` node type does **not** define any credential types. Attempting to attach credentials (e.g., `credentials: { notionApi: { id: '...', name: '...' } }`) causes a runtime error: `"Node type 'n8n-nodes-base.code' does not have any credentials defined"`. The `this.helpers.httpRequestWithAuthentication` method is therefore **not available** in Code nodes.
@@ -740,3 +742,36 @@ The Anthropic API key on this server is stored as an `httpHeaderAuth` credential
   credentials: { httpHeaderAuth: { id: 'JKGmltAERvaKJ6OS', name: 'Anthropic API Key' } }
   ```
 - The `anthropic-version` header must still be sent separately via `headerParameters`
+
+## `fetch()` is not available in n8n Code nodes
+
+The n8n Code node sandbox does **not** expose the global `fetch()` function. Attempting `await fetch(...)` fails with `fetch is not defined`. Built-in Node.js modules via `require()` (like `crypto`, `url`) work, but HTTP calls must use:
+- An **HTTP Request node** (preferred) — wire it before/after the Code node
+- `require('https')` with manual promise wrapping (fragile, not recommended)
+
+When an HTTP Request node replaces `$json` with the API response, use a downstream Code node with a back-reference like `$('OriginalNode').item.json` to restore the original payload.
+
+## Mailchimp ADDRESS merge field
+
+Mailchimp's ADDRESS merge field requires a **structured JSON object** with `addr1`, `addr2`, `city`, `state`, `zip`, `country`. Sending a flat string or an object with empty required fields causes a 400 error: "Please enter a complete address".
+
+- Always construct ADDRESS from individual components, not a single string
+- Guard ADDRESS before sending: only include it when `addr1` is non-empty
+- When `addr1` is empty, send an empty string (not an empty object) to avoid the error
+- Notion stores address components in separate fields (Street Address, Address Line 2, City, State, Postal Code, Country) — map each one to the corresponding Mailchimp ADDRESS sub-field
+
+---
+
+## Maintenance mode gate pattern
+
+Both the Notion Webhook Router and Mailchimp Audience Hook support a Redis-based maintenance mode that silently drops events while returning 200 to callers:
+
+```
+Webhook → HTTP Request (GET n8n:maintenance from Upstash) → IF result not empty
+  True  → Respond to Webhook (200, drop event)
+  False → Restore Event (Code: back-ref to Webhook node) → normal processing
+```
+
+Toggle with: `node maintenance.js on [--ttl 3600]` / `node maintenance.js off` / `node maintenance.js status`
+
+Redis key: `n8n:maintenance` in Upstash. The HTTP Request replaces $json, so the Restore Event node is essential to pass original webhook data downstream.
