@@ -629,9 +629,11 @@ When placing nodes programmatically (via the API or in workflow JS files), follo
 
 ### Mailchimp ↔ Notion linkage via NOTIONID merge field
 
+**Status**: Implemented (March 2026). The guard lives in `workflows/create-or-update-mailchimp-record.js` (replaces `server/create-or-update-mailchimp-record.json`). The `page.deleted` branch is not yet implemented — deleted events are still filtered by the router.
+
 **Problem**: The Notion Webhook Router (`6kSboH0MtIOedeja`) fires for every Contacts DB change, including when the Merge Duplicate Contacts workflow archives source records. Since source and destination share the same email, the archive event can overwrite Mailchimp with stale data from the source record.
 
-**Solution**: Add a `NOTIONID` custom text merge field to the Mailchimp audience that stores the Notion page ID of the canonical contact. Use it as a guard in the webhook-to-Mailchimp sync pipeline.
+**Solution**: A `NOTIONID` custom text merge field in the Mailchimp audience stores the Notion page ID of the canonical contact. The guard in the Mailchimp sub-workflow checks this before allowing updates.
 
 **Guard logic (event type × NOTIONID)**:
 
@@ -640,35 +642,31 @@ When placing nodes programmatically (via the API or in workflow JS files), follo
 | `page.properties_updated` | Matches incoming page ID | Update Mailchimp record |
 | `page.properties_updated` | Blank / missing | Update Mailchimp **and write** incoming page ID into `NOTIONID` (claim) |
 | `page.properties_updated` | Set but doesn't match | **Skip** (stale/duplicate source) |
-| `page.deleted` | Matches incoming page ID | **Archive** the Mailchimp member (canonical contact was deleted) |
-| `page.deleted` | Doesn't match or blank | **Skip** (duplicate was deleted, not the canonical) |
+| `page.deleted` | Matches incoming page ID | **Archive** the Mailchimp member (canonical contact was deleted) — *not yet implemented* |
+| `page.deleted` | Doesn't match or blank | **Skip** (duplicate was deleted, not the canonical) — *not yet implemented* |
 
-The webhook subscription (Notion integration API version `2022-06-28`) is currently set to all page events and all database events, so both `page.properties_updated` and `page.deleted` events reach the router.
+**Implementation details**:
+- The guard is a Code node (`NOTIONID Guard`) placed between the Mailchimp lookup and the Update/Create Switch
+- A `should_claim` flag triggers an update even when no other fields changed, ensuring NOTIONID gets written on first contact
+- Callers without a `notion_page_id` (e.g. paper download forms) bypass the guard entirely
+- The workflow accepts `id` or `notion_page_id` — the Enforce Required Format node normalizes to `notion_page_id`
+- Both Update and Create paths write NOTIONID into Mailchimp merge fields
 
-**Note**: As of March 2026, `page.deleted` events are filtered out by the "Skip Deleted Events" filter node in the Notion Webhook Router. See the broader implications section below for context.
+**Pre-requisite**: The `NOTIONID` text merge field must exist in Mailchimp audience `77d135987f` before deploying. Create via UI or API: `POST /lists/77d135987f/merge-fields` with `{ "name": "Notion ID", "tag": "NOTIONID", "type": "text" }`
 
-**Webhook delivery latency**: Notion webhook events may be delayed 15–30 seconds from the time of the actual change. This applies to all event types, not just deletions.
-
-**Implementation steps**:
-
-1. **Create the merge field** in Mailchimp audience settings: text field, tag `NOTIONID`. (Can also be done via `POST /lists/{list_id}/merge-fields` with `{ "name": "Notion ID", "tag": "NOTIONID", "type": "text" }`)
-2. **Update "Create or Update Mailchimp Record"** sub-workflow (`qvhhwm0l47pZnP8c`): always pass the Notion page `id` into the `NOTIONID` merge field alongside existing fields
-3. **Pass the event type through the router**: The Notion Webhook Router currently formats contact data but does not forward the event type. Add the event type (from the webhook payload) to the data passed into "Contact Updates from Notion" so it can branch on it.
-4. **Add a guard in "Contact Updates from Notion"** (`XfO5Zg1zn6A4vhD6`): before calling the Mailchimp sub-workflow, look up the Mailchimp member by email (GET `/lists/{list_id}/members/{subscriber_hash}`), read `merge_fields.NOTIONID`, and branch per the table above:
-   - `page.properties_updated` + match/blank → update Mailchimp (+ claim if blank)
-   - `page.properties_updated` + mismatch → skip
-   - `page.deleted` + match → archive Mailchimp member (PUT `/lists/{list_id}/members/{subscriber_hash}` with `{ "status": "cleaned" }` or use the archive/delete endpoint)
-   - `page.deleted` + mismatch/blank → skip
-
-**Edge cases to handle**:
+**Edge cases**:
 - *New Mailchimp member from signup form (no Notion record yet)*: NOTIONID stays blank until a Notion contact with the same email triggers a webhook, which then claims it.
-- *Notion record deleted and recreated*: New page ID won't match. Guard could check if the page referenced by NOTIONID is archived/deleted (GET `/pages/{id}`, check `archived: true`); if so, allow the new page to re-claim.
+- *Notion record deleted and recreated*: New page ID won't match. Guard could check if the page referenced by NOTIONID is archived/deleted (GET `/pages/{id}`, check `archived: true`); if so, allow the new page to re-claim. Not yet implemented.
 - *Two Notion duplicates fire webhooks before merge runs*: First one claims. Second is blocked. Running the merge workflow resolves the underlying duplicate.
 
+**Mailchimp Profile URL write-back**: When the NOTIONID guard claims a subscriber (blank NOTIONID), the Mailchimp sub-workflow writes the Mailchimp admin profile URL back to the Notion contact's "Mailchimp Profile" url property. The URL is also written during the initial Notion upsert when a Mailchimp webhook fires — the Mailchimp Audience Hook extracts `web_id` from the payload and passes `mailchimp_profile` to the upsert sub-workflow. The DC (`MAILCHIMP_DC` in `.env`) is used to construct the URL.
+
 **Affected workflows**:
-- `Notion Webhook Router` — `6kSboH0MtIOedeja` (active)
-- `Contact Updates from Notion` — `XfO5Zg1zn6A4vhD6` (sub-workflow, receives formatted contact)
-- `Create or Update Mailchimp Record` — `qvhhwm0l47pZnP8c` (sub-workflow, writes to Mailchimp API)
+- `Create or Update Mailchimp Record` — `workflows/create-or-update-mailchimp-record.js` (contains the guard + write-back)
+- `Contact Updates from Notion` — `workflows/contact-updates-from-notion.js` (passes `notion_page_id`)
+- `Mailchimp Audience Hook` — `workflows/mailchimp-audience-hook.js` (passes `mailchimp_profile` URL to upsert)
+- `Notion Master Contact Upsert` — `workflows/upsert-contact.js` (writes `mailchimp_profile` to Notion)
+- `Adapter: Contacts` — `workflows/adapter-contacts.js` (already passes `id` in field mappings)
 
 ### `page.deleted` events in the Notion Webhook Router — broader implications
 

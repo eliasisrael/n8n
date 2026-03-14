@@ -56,6 +56,7 @@ const FIELD_MAP = {
   postal_code:      { prop: 'Postal Code',      notionKey: 'property_postal_code',      apiType: 'rich_text' },
   country:          { prop: 'Country',          notionKey: 'property_country',          apiType: 'rich_text' },
   phone:            { prop: 'Phone',            notionKey: 'property_phone',            apiType: 'phone_number' },
+  mailchimp_profile:{ prop: 'Mailchimp Profile', notionKey: 'property_mailchimp_profile', apiType: 'url' },
 };
 
 // Shared helper function (embedded in Code node strings) that converts a
@@ -69,6 +70,7 @@ function toNotionProp(apiType, value) {
     case 'phone_number': return { phone_number: String(value) };
     case 'select':       return { select: { name: String(value) } };
     case 'multi_select': return { multi_select: (Array.isArray(value) ? value : [value]).map(v => ({ name: String(v) })) };
+    case 'url':          return { url: String(value) };
     default: throw new Error('Unknown apiType: ' + apiType);
   }
 }

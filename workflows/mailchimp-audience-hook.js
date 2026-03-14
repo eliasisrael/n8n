@@ -48,6 +48,12 @@ if (!MAILCHIMP_WEBHOOK_SECRET) {
   throw new Error('Missing MAILCHIMP_WEBHOOK_SECRET in .env');
 }
 
+// Mailchimp data center — used to build the admin profile URL.
+const MAILCHIMP_DC = process.env.MAILCHIMP_DC;
+if (!MAILCHIMP_DC) {
+  throw new Error('Missing MAILCHIMP_DC in .env');
+}
+
 // Webhook path — shared by both GET and POST nodes.
 const WEBHOOK_PATH = '6a90994c-ebb0-4fb0-be82-010bd6b82745';
 
@@ -154,6 +160,14 @@ function get(body, key) {
   return body[key] || "";
 }
 
+// Build Mailchimp admin profile URL from web_id (when available).
+const MC_DC = "${MAILCHIMP_DC}";
+function mcProfileUrl(body) {
+  const webId = get(body, "data[web_id]");
+  if (!webId) return null;
+  return "https://" + MC_DC + ".admin.mailchimp.com/lists/members/view?id=" + webId;
+}
+
 const items = $input.all();
 const results = [];
 
@@ -170,7 +184,7 @@ for (const item of items) {
 
   if (eventType === "upemail") {
     // Email changed: create new contact + mark old as unsubscribed.
-    // upemail payloads have NO merge fields — only old/new email.
+    // upemail payloads have NO merge fields and no web_id.
     results.push({
       json: {
         email: get(body, "data[new_email]"),
@@ -193,10 +207,11 @@ for (const item of items) {
         email: get(body, "data[email]"),
         email_marketing: "Cleaned",
         tags: [],
+        mailchimp_profile: mcProfileUrl(body),
       },
     });
   } else {
-    // subscribe, unsubscribe, profile — all include merge fields.
+    // subscribe, unsubscribe, profile — all include merge fields + web_id.
     const statusMap = {
       subscribe: "Subscribed",
       unsubscribe: "Unsubscribed",
@@ -218,6 +233,7 @@ for (const item of items) {
         country: get(body, "data[merges][ADDRESS][country]") || null,
         email_marketing: statusMap[eventType] || "Subscribed",
         tags: baseTags,
+        mailchimp_profile: mcProfileUrl(body),
       },
     });
   }
