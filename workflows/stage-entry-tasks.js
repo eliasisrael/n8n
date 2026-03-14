@@ -46,6 +46,7 @@ import { createWorkflow, createNode, connect } from '../lib/workflow.js';
 // ---------------------------------------------------------------------------
 
 const TASKS_DB_ID = '3528f55e5be14e96ad617d07e6b0beaa'; // VF Tasks
+const ACTIVITIES_DB_ID = '3178ebaf-15ee-803f-bf71-e30bfc97b2b8'; // Activities
 const NOTIFY_USER_ID = '08b11b55-f9b3-4dfa-b88b-9c57ab5cd6bf'; // Eve
 
 // Pipeline metadata: DB ID → relation property name + tag
@@ -78,6 +79,31 @@ const STAGE_TASKS = {
     'Proposed':  { taskName: 'Follow up on pitch: {deal}',        dueDays: 5, priority: 'Medium' },
   },
 };
+
+// Terminal statuses: DB ID → { status → outcome type }
+// When a deal reaches one of these, an Activity record is created.
+const TERMINAL_STATUSES = {
+  // Sales Pipeline
+  '2ed21e43-d3a5-45f4-8cf4-a2a8f61a264f': {
+    'Signed 100%':   'Deal Won',
+    'Completed':     'Deal Won',
+    'Lost/rejected': 'Deal Lost',
+  },
+  // Partner Pipeline
+  '457cfa4c-123b-4718-a7d3-c8bf7ea4a27e': {
+    'Closed/signed': 'Deal Won',
+    'Lost/rejected': 'Deal Lost',
+  },
+  // Comms Pipeline
+  '35d10c83-92e6-4ce2-adc2-8c03e2c97480': {
+    'Confirmed':          'Deal Won',
+    'Completed/Captured': 'Deal Won',
+    'VF delivered':       'Deal Won',
+    'Rejected/Cancelled': 'Deal Lost',
+  },
+};
+
+const TERMINAL_STATUSES_JSON = JSON.stringify(TERMINAL_STATUSES);
 
 const NOTION_CREDENTIAL = {
   notionApi: { id: 'lOLrwKiRnGrhZ9xM', name: 'Eve Notion Account' },
@@ -463,6 +489,186 @@ createTask.waitBetweenTries = 1000;
 createTask.continueOnFail = true;
 
 // ---------------------------------------------------------------------------
+// Outcome Log — parallel branch for terminal statuses
+// ---------------------------------------------------------------------------
+
+// 10. Check Terminal Status — build Activity creation body if deal is at terminal status
+const checkTerminalStatus = createNode(
+  'Check Terminal Status',
+  'n8n-nodes-base.code',
+  {
+    mode: 'runOnceForAllItems',
+    jsCode: `
+const ACTIVITIES_DB_ID = '${ACTIVITIES_DB_ID}';
+const DB_TO_PIPELINE   = ${DB_TO_PIPELINE_JSON};
+const TERMINAL_STATUSES = ${TERMINAL_STATUSES_JSON};
+
+const result = [];
+for (const item of $input.all()) {
+  const body    = item.json.body || {};
+  const record  = item.json.record || {};
+  const updated = Array.isArray(body.data?.updated_properties)
+    ? body.data.updated_properties
+    : [];
+
+  // Only act when Status was explicitly changed
+  if (!updated.includes('Status')) continue;
+
+  const dbId       = body.data?.parent?.id || '';
+  const dealPageId = body.entity?.id || '';
+  const pipeline   = DB_TO_PIPELINE[dbId];
+  const terminalMap = TERMINAL_STATUSES[dbId];
+
+  if (!pipeline || !terminalMap || !dealPageId) continue;
+
+  const currentStatus = record.property_status || '';
+  const outcomeType   = terminalMap[currentStatus];
+  if (!outcomeType) continue; // Not a terminal status
+
+  const dealName = record.name || 'Unnamed Deal';
+
+  // Calculate days in pipeline
+  const createdAt = record.property_created_time || record.property_added || '';
+  const daysInPipeline = createdAt
+    ? Math.round((Date.now() - new Date(createdAt).getTime()) / 86400000)
+    : null;
+
+  const preview = daysInPipeline !== null
+    ? \`\${pipeline.name} · \${currentStatus} · \${daysInPipeline} days in pipeline\`
+    : \`\${pipeline.name} · \${currentStatus}\`;
+
+  // Build contact relation array from record (if available)
+  const contactIds = Array.isArray(record.property_contact)
+    ? record.property_contact.map(id => ({ id }))
+    : typeof record.property_contact === 'string' && record.property_contact
+      ? [{ id: record.property_contact }]
+      : [];
+
+  // Build the Activity creation body
+  const activityBody = {
+    parent: { database_id: ACTIVITIES_DB_ID },
+    properties: {
+      Name:    { title: [{ text: { content: \`\${outcomeType}: \${dealName}\` } }] },
+      Type:    { select: { name: outcomeType } },
+      Date:    { date: { start: new Date().toISOString() } },
+      Preview: { rich_text: [{ text: { content: preview } }] },
+      [pipeline.relProp]: { relation: [{ id: dealPageId }] },
+    },
+  };
+
+  // Add contact relation if available
+  if (contactIds.length > 0) {
+    activityBody.properties.Contact = { relation: contactIds };
+  }
+
+  // Dedup query: check if outcome Activity already exists for this deal
+  const queryBody = {
+    filter: {
+      and: [
+        {
+          property: pipeline.relProp,
+          relation: { contains: dealPageId },
+        },
+        {
+          or: [
+            { property: 'Type', select: { equals: 'Deal Won' } },
+            { property: 'Type', select: { equals: 'Deal Lost' } },
+          ],
+        },
+      ],
+    },
+    page_size: 1,
+  };
+
+  result.push({
+    json: { activityBody, queryBody },
+  });
+}
+
+return result;
+`,
+  },
+  { typeVersion: 2, position: [250, 600] },
+);
+
+// 11. Query Existing Outcomes — check for duplicate outcome records
+const queryExistingOutcomes = createNode(
+  'Query Existing Outcomes',
+  'n8n-nodes-base.httpRequest',
+  {
+    method: 'POST',
+    url: `https://api.notion.com/v1/databases/${ACTIVITIES_DB_ID}/query`,
+    authentication: 'predefinedCredentialType',
+    nodeCredentialType: 'notionApi',
+    sendHeaders: true,
+    headerParameters: {
+      parameters: [{ name: 'Notion-Version', value: '2022-06-28' }],
+    },
+    sendBody: true,
+    specifyBody: 'json',
+    jsonBody: '={{ $json.queryBody }}',
+  },
+  { typeVersion: 4.2, credentials: NOTION_CREDENTIAL, position: [500, 600] },
+);
+queryExistingOutcomes.retryOnFail = true;
+queryExistingOutcomes.maxTries = 3;
+queryExistingOutcomes.waitBetweenTries = 1000;
+queryExistingOutcomes.continueOnFail = true;
+
+// 12. Merge Outcome Query + Context
+const mergeOutcomeQuery = createNode(
+  'Merge Outcome Query + Context',
+  'n8n-nodes-base.merge',
+  { mode: 'combine', combineBy: 'combineByPosition' },
+  { position: [750, 700], typeVersion: 3 },
+);
+
+// 13. No Existing Outcome? — filter: only pass items with no existing outcome Activity
+const noExistingOutcome = createNode(
+  'No Existing Outcome?',
+  'n8n-nodes-base.filter',
+  {
+    conditions: {
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
+      conditions: [
+        {
+          id: 'outcome-dedup',
+          leftValue: '={{ $json.results.length }}',
+          rightValue: 0,
+          operator: { type: 'number', operation: 'equals' },
+        },
+      ],
+      combinator: 'and',
+    },
+  },
+  { position: [1000, 700], typeVersion: 2 },
+);
+
+// 14. Create Outcome Activity — POST to Notion /pages
+const createOutcomeActivity = createNode(
+  'Create Outcome Activity',
+  'n8n-nodes-base.httpRequest',
+  {
+    method: 'POST',
+    url: 'https://api.notion.com/v1/pages',
+    authentication: 'predefinedCredentialType',
+    nodeCredentialType: 'notionApi',
+    sendHeaders: true,
+    headerParameters: {
+      parameters: [{ name: 'Notion-Version', value: '2022-06-28' }],
+    },
+    sendBody: true,
+    specifyBody: 'json',
+    jsonBody: '={{ $json.activityBody }}',
+  },
+  { typeVersion: 4.2, credentials: NOTION_CREDENTIAL, position: [1250, 700] },
+);
+createOutcomeActivity.retryOnFail = true;
+createOutcomeActivity.maxTries = 3;
+createOutcomeActivity.waitBetweenTries = 1000;
+createOutcomeActivity.continueOnFail = true;
+
+// ---------------------------------------------------------------------------
 // Workflow
 // ---------------------------------------------------------------------------
 
@@ -477,6 +683,11 @@ export default createWorkflow('Stage Entry Tasks', {
     mergeHaikuAndContext,
     finalizeTaskBody,
     createTask,
+    checkTerminalStatus,
+    queryExistingOutcomes,
+    mergeOutcomeQuery,
+    noExistingOutcome,
+    createOutcomeActivity,
   ],
   connections: [
     // Trigger → Check Status & Build Plan
@@ -508,6 +719,26 @@ export default createWorkflow('Stage Entry Tasks', {
 
     // Finalize → Create Task
     connect(finalizeTaskBody, createTask),
+
+    // --- Outcome Log branch (parallel from trigger) ---
+
+    // Trigger → Check Terminal Status
+    connect(trigger, checkTerminalStatus),
+
+    // Check Terminal Status → Query Existing Outcomes (dedup query)
+    connect(checkTerminalStatus, queryExistingOutcomes),
+
+    // Fork: Check Terminal Status → Merge Outcome Query input 1 (passthrough)
+    connect(checkTerminalStatus, mergeOutcomeQuery, 0, 1),
+
+    // Query results → Merge Outcome Query input 0
+    connect(queryExistingOutcomes, mergeOutcomeQuery, 0, 0),
+
+    // Merge → Skip If Outcome Exists
+    connect(mergeOutcomeQuery, noExistingOutcome),
+
+    // Skip If Outcome Exists → Create Outcome Activity
+    connect(noExistingOutcome, createOutcomeActivity),
   ],
   settings: {
     errorWorkflow: 'EZTb8m4htw60nP0b',
