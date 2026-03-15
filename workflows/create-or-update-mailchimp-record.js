@@ -369,8 +369,8 @@ const filterTagsChanged = createNode(
         {
           id: crypto.randomUUID(),
           leftValue: "={{ ($('Enforce Required Format').item.json.Tags || []).some(t => !($json.tags || []).map(x => x.name).includes(t)) }}",
-          rightValue: true,
-          operator: { type: 'boolean', operation: 'equals' },
+          rightValue: '',
+          operator: { type: 'boolean', operation: 'true', singleValue: true },
         },
       ],
       combinator: 'and',
