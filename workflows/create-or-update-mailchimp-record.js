@@ -66,7 +66,7 @@ const trigger = createNode(
       notion_page_id: '',
     }),
   },
-  { position: [160, -432], typeVersion: 1.1 },
+  { position: [160, -336], typeVersion: 1.1 },
 );
 
 // 2. Enforce Required Format — lowercase email, default status, extract page ID
@@ -99,7 +99,7 @@ const enforceFormat = createNode(
     includeOtherFields: true,
     options: {},
   },
-  { position: [384, -432], typeVersion: 3.4 },
+  { position: [384, -336], typeVersion: 3.4 },
 );
 
 // 3. Find Existing Subs — Mailchimp GET by email
@@ -114,7 +114,7 @@ const findExisting = createNode(
     email: '={{ $json.email_address }}',
     options: {},
   },
-  { position: [608, -432], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
+  { position: [608, -336], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
 );
 findExisting.retryOnFail = true;
 findExisting.onError = 'continueRegularOutput';
@@ -137,7 +137,7 @@ const enforceEmailLower = createNode(
     includeOtherFields: true,
     options: {},
   },
-  { position: [832, -432], typeVersion: 3.4 },
+  { position: [832, -336], typeVersion: 3.4 },
 );
 
 // 5. NOTIONID Guard — Code node that compares incoming page ID with Mailchimp NOTIONID
@@ -166,7 +166,7 @@ if (!incomingId) {
 
 return $input.item;`,
   },
-  { position: [1056, -432], typeVersion: 2 },
+  { position: [1056, -336], typeVersion: 2 },
 );
 
 // 6. Guard Filter — drop items where guard says skip
@@ -196,7 +196,7 @@ const guardFilter = createNode(
     },
     options: {},
   },
-  { position: [1280, -432], typeVersion: 2.2 },
+  { position: [1280, -336], typeVersion: 2.2 },
 );
 
 // 7. Switch — existing member (Update) vs new member (Create)
@@ -260,7 +260,7 @@ const switchNode = createNode(
     },
     options: {},
   },
-  { position: [1504, -432], typeVersion: 3.2 },
+  { position: [1504, -336], typeVersion: 3.2 },
 );
 
 // ---------------------------------------------------------------------------
@@ -317,7 +317,7 @@ const filterMergeFields = createNode(
     },
     options: {},
   },
-  { position: [1728, -624], typeVersion: 2.2 },
+  { position: [1728, -720], typeVersion: 2.2 },
 );
 
 // 8b. Filter: Tags Changed — only call Record Tags when tags actually differ
@@ -344,7 +344,7 @@ const filterTagsChanged = createNode(
     },
     options: {},
   },
-  { position: [1728, -432], typeVersion: 2.2 },
+  { position: [1728, -528], typeVersion: 2.2 },
 );
 
 // 9. Remove Cleaned Entries — skip if Mailchimp status is "cleaned"
@@ -371,7 +371,7 @@ const removeCleaned = createNode(
     },
     options: {},
   },
-  { position: [1952, -528], typeVersion: 2.2 },
+  { position: [1952, -720], typeVersion: 2.2 },
 );
 
 // 10. Build Update Record — merge incoming data with existing, include NOTIONID
@@ -445,7 +445,7 @@ const buildUpdate = createNode(
     },
     options: {},
   },
-  { position: [2176, -528], typeVersion: 3.4 },
+  { position: [2176, -720], typeVersion: 3.4 },
 );
 
 // 11. Update Subscribers — Mailchimp update with NOTIONID in merge fields
@@ -469,7 +469,7 @@ const updateSubs = createNode(
       status: '={{ $json.status }}',
     },
   },
-  { position: [2400, -528], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
+  { position: [2400, -720], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
 );
 updateSubs.retryOnFail = true;
 
@@ -498,7 +498,7 @@ oldTags.forEach(obj => {
 $input.item.json.updatedTags = updatedTags;
 return $input.item;`,
   },
-  { position: [1952, -432], typeVersion: 2 },
+  { position: [1952, -528], typeVersion: 2 },
 );
 
 // 13. Record Tags — POST tag updates to Mailchimp API
@@ -522,7 +522,7 @@ const recordTags = createNode(
       },
     },
   },
-  { position: [2176, -432], typeVersion: 4.3, credentials: MAILCHIMP_CREDENTIAL },
+  { position: [2176, -528], typeVersion: 4.3, credentials: MAILCHIMP_CREDENTIAL },
 );
 recordTags.retryOnFail = true;
 recordTags.waitBetweenTries = 2000;
@@ -552,7 +552,7 @@ const ifPaperDownloaded = createNode(
     },
     options: {},
   },
-  { position: [1728, -240], typeVersion: 2.2 },
+  { position: [1728, 48], typeVersion: 2.2 },
 );
 
 // 15. Record download event — POST paper_downloaded_website event to Mailchimp
@@ -579,7 +579,7 @@ const recordDownload = createNode(
     options: {},
   },
   {
-    position: [1952, -240],
+    position: [1952, 48],
     typeVersion: 4.2,
     credentials: {
       ...MAILCHIMP_CREDENTIAL,
@@ -615,7 +615,7 @@ const insertNew = createNode(
       ],
     },
   },
-  { position: [1728, -336], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
+  { position: [1728, -240], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
 );
 insertNew.retryOnFail = true;
 
