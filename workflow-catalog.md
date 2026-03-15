@@ -42,6 +42,7 @@ These server workflows have a corresponding `.js` file in `workflows/`.
 | stale-pipeline-alerts.json | Stale Pipeline Alerts | stale-pipeline-alerts.js | |
 | vf-notes-webhook.json | VF Notes Webhook | vf-notes-webhook.js | |
 | appearances-management.json | Appearances Management | appearances-management.js | |
+| book-endorsements-management.json | Book Endorsements Management | book-endorsements-management.js | |
 
 ## Managed by Patch Scripts
 
@@ -59,7 +60,6 @@ These server-only workflows need local `.js` implementations.
 
 | Server File | Workflow Name |
 |---|---|
-| book-endorsements-management.json | Book Endorsements Management |
 | check-engagements.json | Check Engagements |
 | clients-management.json | Clients Management |
 | contacts-management.json | Contacts Management |
