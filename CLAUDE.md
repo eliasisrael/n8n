@@ -29,10 +29,12 @@ build.js     # Build script: compiles workflows/ -> output/
 
 ## Building
 ```sh
-node build.js                          # build all workflows
-node build.js --workflow my-flow       # build one (omit .js extension)
+op run --env-file=.env.tpl -- node build.js                    # build all workflows
+op run --env-file=.env.tpl -- node build.js --workflow my-flow  # build one (omit .js extension)
 ```
 Output lands in `output/<workflow-name>.json`, ready to import into n8n.
+
+Secrets are managed via 1Password CLI (`op`). The `.env.tpl` file contains `op://` references — no plaintext secrets on disk. The 1Password desktop app must be unlocked for `op run` to work.
 
 ## How to Define a Workflow
 Use the helpers from `lib/workflow.js`:
