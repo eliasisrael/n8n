@@ -9,15 +9,22 @@ A Node.js project for programmatically defining n8n workflows in JavaScript. Eac
 - **Full host control**: we own the server and can install any packages or community nodes
 
 ## Deployment Model
-- **JSON export only** — workflows are built to `output/*.json` and manually imported into n8n via the UI or CLI
-- No programmatic API deployment; no API key or auth integration needed in this project
+Workflows are built locally to `output/*.json`, then deployed to the n8n server via the API using `push-workflows.js`. All commands require 1Password CLI (`op run`) for secrets.
 
 ## Project Structure
 ```
-workflows/   # Workflow definitions (one .js file per workflow)
-output/      # Generated n8n JSON (gitignored, created by build)
-lib/         # Shared helpers (workflow builder, node factories)
-build.js     # Build script: compiles workflows/ -> output/
+workflows/        # Workflow definitions (one .js file per workflow)
+output/           # Generated n8n JSON (gitignored, created by build)
+server/           # Snapshots pulled from the live n8n server (for reference/backup)
+lib/              # Shared helpers (workflow builder, node factories, adapter template)
+build.js          # Build script: compiles workflows/ -> output/
+push-workflows.js # Deploy built workflows to n8n server
+pull-workflows.js # Download workflows from n8n server to server/
+activate-workflows.js    # Activate workflows on n8n server
+deactivate-workflows.js  # Deactivate workflows on n8n server
+maintenance.js           # Toggle maintenance mode via Redis
+setup-qstash-topics.js   # Configure QStash URL Groups + Redis topic mappings
+patch-router*.js         # One-off scripts that patch the Notion Webhook Router in-place
 ```
 
 ## Conventions
@@ -35,6 +42,68 @@ op run --env-file=.env.tpl -- node build.js --workflow my-flow  # build one (omi
 Output lands in `output/<workflow-name>.json`, ready to import into n8n.
 
 Secrets are managed via 1Password CLI (`op`). The `.env.tpl` file contains `op://` references — no plaintext secrets on disk. The 1Password desktop app must be unlocked for `op run` to work.
+
+## CLI Tools
+
+All tools use 1Password CLI for secrets. Prefix every command with `op run --env-file=.env.tpl --`.
+
+### `push-workflows.js` — Deploy to n8n server
+Pushes built JSON from `output/` to the n8n server. Matches by workflow name: updates existing, creates new.
+```sh
+op run --env-file=.env.tpl -- node push-workflows.js                        # push all
+op run --env-file=.env.tpl -- node push-workflows.js --workflow my-flow     # push one (omit .json)
+op run --env-file=.env.tpl -- node push-workflows.js --dry-run              # preview
+```
+
+### `pull-workflows.js` — Download from n8n server
+Downloads all workflows from the server to `server/` as JSON snapshots. Skips unchanged workflows.
+```sh
+op run --env-file=.env.tpl -- node pull-workflows.js              # pull all (skip unchanged)
+op run --env-file=.env.tpl -- node pull-workflows.js --force      # re-download all
+op run --env-file=.env.tpl -- node pull-workflows.js --list       # list server workflows
+```
+
+### `activate-workflows.js` / `deactivate-workflows.js` — Toggle workflow activation
+```sh
+op run --env-file=.env.tpl -- node activate-workflows.js                       # activate all adapters
+op run --env-file=.env.tpl -- node activate-workflows.js --workflow my-flow    # activate one
+op run --env-file=.env.tpl -- node activate-workflows.js --all                 # activate ALL built
+op run --env-file=.env.tpl -- node activate-workflows.js --dry-run             # preview
+```
+Same flags for `deactivate-workflows.js`.
+
+### `maintenance.js` — Maintenance mode
+Toggles maintenance mode via Upstash Redis. When active, the Notion Webhook Router and Mailchimp Audience Hook accept webhooks (200 OK) but silently drop all events.
+```sh
+op run --env-file=.env.tpl -- node maintenance.js on               # enable
+op run --env-file=.env.tpl -- node maintenance.js on --ttl 3600    # enable with 1-hour auto-expire
+op run --env-file=.env.tpl -- node maintenance.js off              # disable
+op run --env-file=.env.tpl -- node maintenance.js status           # check current state
+```
+
+### `setup-qstash-topics.js` — Configure QStash routing
+Creates QStash URL Groups (topics), registers adapter webhook endpoints, and writes database-ID-to-topic-name mappings to Redis so the router can look up the correct topic at runtime.
+```sh
+op run --env-file=.env.tpl -- node setup-qstash-topics.js              # apply
+op run --env-file=.env.tpl -- node setup-qstash-topics.js --dry-run    # preview
+```
+
+### `patch-router*.js` — One-off router patches
+These scripts modify the Notion Webhook Router directly on the server (fetch → patch → push). They are **idempotent** — safe to re-run.
+- **`patch-router.js`** — Wires pipeline sub-workflows (Sales, Partner, Comms) into the router Switch
+- **`patch-router-maintenance.js`** — Inserts maintenance mode gate between Webhook and Calculate Signature
+- **`patch-router-debounce.js`** — Inserts Redis debounce gate (SET NX EX 10) between Skip Deleted Events and Sort by Timestamp
+- **`patch-router-qstash.js`** — Replaces the debounce gate + Switch fan-out with Redis pipeline + QStash publish
+
+```sh
+op run --env-file=.env.tpl -- node patch-router-debounce.js              # apply
+op run --env-file=.env.tpl -- node patch-router-debounce.js --dry-run    # preview
+```
+
+### Common workflow: build + deploy
+```sh
+op run --env-file=.env.tpl -- node build.js && op run --env-file=.env.tpl -- node push-workflows.js
+```
 
 ## How to Define a Workflow
 Use the helpers from `lib/workflow.js`:
@@ -68,6 +137,30 @@ export default createWorkflow('My Workflow', {
 
 ### `createWorkflow(name, { nodes, connections, active?, settings?, tags? })`
 - Assembles the final n8n JSON; `active` defaults to `false`
+
+## Secrets Management
+Secrets are managed via **1Password CLI** (`op run`). The `.env.tpl` file contains `op://` references — no plaintext secrets on disk. The 1Password desktop app must be unlocked for `op run` to work.
+
+Key secrets in `.env.tpl`:
+- `N8N_API_KEY` / `N8N_BASE_URL` — n8n server API access
+- `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` — Upstash Redis (debounce, maintenance mode)
+- `QSTASH_URL` / `QSTASH_TOKEN` — QStash delayed delivery
+- `QSTASH_CURRENT_SIGNING_KEY` / `QSTASH_NEXT_SIGNING_KEY` — QStash JWT signature verification
+- `MAILCHIMP_WEBHOOK_SECRET` — Shared secret for Mailchimp webhook validation
+- `MAILCHIMP_DC` — Mailchimp data center (for admin profile URLs)
+- `ANTHROPIC_API_KEY` — Anthropic API (used by some workflows)
+- `WEBFLOW_VERIFICATION_KEY` — Webflow webhook verification
+
+## Shared Libraries
+
+### `lib/workflow.js` — Workflow builder helpers
+`createWorkflow`, `createNode`, `connect` — see "How to Define a Workflow" section.
+
+### `lib/load-env.js` — Environment loader
+Loads from `.env` file if present, otherwise falls back to `process.env` (for `op run` injection).
+
+### `lib/adapter-template.js` — QStash adapter template
+Factory function for creating Notion webhook adapter workflows. Each adapter receives QStash callbacks, verifies the JWT signature, formats the payload for a specific Notion database, and upserts via the shared `upsert-contact` sub-workflow.
 
 ## Primary Use Case
 Event-driven automations (webhooks, schedules, triggers) integrating a wide variety of services: HTTP/webhooks, databases (Postgres, MySQL, MongoDB), and SaaS APIs (Slack, Google Sheets, GitHub, etc.).
