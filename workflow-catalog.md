@@ -47,6 +47,7 @@ These server workflows have a corresponding `.js` file in `workflows/`.
 | clients-management.json | Clients Management | clients-management.js | |
 | copy-products-to-notion-and-mailchimp.json | Copy Products To Notion and Mailchimp | copy-products-to-notion-and-mailchimp.js | |
 | create-or-update-product.json | Create or Update Product | create-or-update-product.js | |
+| create-thinkific-store.json | Create Thinkific Store | create-thinkific-store.js | |
 
 ## Managed by Patch Scripts
 
@@ -64,7 +65,6 @@ These server-only workflows need local `.js` implementations.
 
 | Server File | Workflow Name |
 |---|---|
-| create-thinkific-store.json | Create Thinkific Store |
 | error-handler.json | Error Handler |
 | forecast-engine.json | Forecast Engine |
 | handle-unsubs.json | Handle Unsubs |
@@ -109,9 +109,9 @@ These workflows are deprecated or no longer needed. Can be deactivated and remov
 
 ## Summary
 
-- **Implemented locally**: 31 unique workflows (36 server files, due to duplicates)
+- **Implemented locally**: 32 unique workflows (36 server files, due to duplicates)
 - **Managed by patch scripts**: 1 workflow (3 server snapshots)
-- **To implement**: 19 workflows
+- **To implement**: 18 workflows
 - **To archive**: 16 workflows
 - **Local-only**: 1 file (`_example-http-poll.js` — example template)
 - **Filename mismatches**: 4 (adapter-endorsements, find-orphaned-mailchimp-members, topic-engine, upsert-contact)
