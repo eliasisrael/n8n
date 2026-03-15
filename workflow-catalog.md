@@ -43,6 +43,8 @@ These server workflows have a corresponding `.js` file in `workflows/`.
 | vf-notes-webhook.json | VF Notes Webhook | vf-notes-webhook.js | |
 | appearances-management.json | Appearances Management | appearances-management.js | |
 | book-endorsements-management.json | Book Endorsements Management | book-endorsements-management.js | |
+| check-engagements.json | Check Engagements | check-engagements.js | |
+| clients-management.json | Clients Management | clients-management.js | |
 
 ## Managed by Patch Scripts
 
@@ -60,8 +62,6 @@ These server-only workflows need local `.js` implementations.
 
 | Server File | Workflow Name |
 |---|---|
-| check-engagements.json | Check Engagements |
-| clients-management.json | Clients Management |
 | contacts-management.json | Contacts Management |
 | copy-products-to-notion-and-mailchimp.json | Copy Products To Notion and Mailchimp |
 | create-or-update-product.json | Create or Update Product |
