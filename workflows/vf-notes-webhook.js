@@ -25,42 +25,81 @@ const ANTHROPIC_CREDENTIAL = {
 };
 
 // ---------------------------------------------------------------------------
-// Code: Extract text from Notion blocks + prepare summary prompt
+// Code: Extract block IDs that have children (need recursive fetch)
+// ---------------------------------------------------------------------------
+const EXTRACT_CHILD_BLOCK_IDS_CODE = `
+const response = $input.first().json;
+const blocks = response.results || [];
+
+const output = [];
+for (const block of blocks) {
+  if (block.has_children) {
+    output.push({ json: { blockId: block.id } });
+  }
+}
+
+// Always output at least one item so the chain continues.
+// If no blocks have children, output a sentinel — the HTTP Request will
+// fail gracefully (continueOnFail) and Build Summary Prompt handles it.
+if (output.length === 0) {
+  output.push({ json: { blockId: '_none_', _noChildren: true } });
+}
+
+return output;
+`;
+
+// ---------------------------------------------------------------------------
+// Code: Extract text from Notion blocks (top-level + children) + build prompt
 // ---------------------------------------------------------------------------
 const BUILD_SUMMARY_PROMPT_CODE = `
-// $json comes from the Fetch Page Blocks HTTP response.
-// The response has a "results" array of block objects.
-// We also need the original record from the trigger — access it via
-// the 'Execute Workflow Trigger' node.
+// Runs once for ALL items (one item per Fetch Child Blocks response).
+// Also pulls top-level blocks and trigger data via node references.
 const trigger = $('Execute Workflow Trigger').first().json;
 const record = trigger.record || {};
 const body = trigger.body || {};
 const entityId = body.entity?.id || '';
 
-const blocks = $json.results || [];
+// Top-level blocks from Fetch Page Blocks
+const topLevelBlocks = $('Fetch Page Blocks').first().json.results || [];
 
-// Extract text content from all block types
+// Child block responses — each input item has a .json.results array
+const childItems = $input.all();
+
 function extractText(richTextArray) {
   if (!Array.isArray(richTextArray)) return '';
   return richTextArray.map(rt => rt.plain_text || rt.text?.content || '').join('');
 }
 
-const lines = [];
-for (const block of blocks) {
+function extractBlockText(block) {
   const type = block.type;
-  if (!type || !block[type]) continue;
+  if (!type || !block[type]) return '';
 
-  const rt = block[type].rich_text;
-  if (rt) {
-    const text = extractText(rt);
-    if (text) lines.push(text);
-  }
-
-  // Handle to_do blocks
+  // Handle to_do blocks specially (checkbox prefix)
   if (type === 'to_do' && block.to_do?.rich_text) {
     const checked = block.to_do.checked ? '[x]' : '[ ]';
     const text = extractText(block.to_do.rich_text);
-    if (text) lines.push(checked + ' ' + text);
+    return text ? checked + ' ' + text : '';
+  }
+
+  const rt = block[type].rich_text;
+  if (rt) return extractText(rt);
+  return '';
+}
+
+const lines = [];
+
+// 1. Extract text from top-level blocks (headings, paragraphs, etc.)
+for (const block of topLevelBlocks) {
+  const text = extractBlockText(block);
+  if (text) lines.push(text);
+}
+
+// 2. Extract text from all fetched child blocks
+for (const item of childItems) {
+  const childBlocks = item.json?.results || [];
+  for (const block of childBlocks) {
+    const text = extractBlockText(block);
+    if (text) lines.push(text);
   }
 }
 
@@ -68,15 +107,14 @@ const bodyText = lines.join('\\n').substring(0, 8000); // Cap for Haiku context
 const name = record.name || record.property_name || 'Untitled';
 
 if (!bodyText || bodyText.length < 20) {
-  // Too short to summarize — pass through with skip flag
-  return {
+  return [{
     json: {
       _skipSummary: true,
       _record: record,
       _entityId: entityId,
       _name: name,
     }
-  };
+  }];
 }
 
 const prompt = \`Summarize the key points of these account notes in 3-5 concise bullet points. Each bullet should be one sentence. Focus on business relationships, opportunities, and action items. Use plain text only — no markdown, no bold, no asterisks. Keep the total output under 1500 characters.
@@ -91,7 +129,7 @@ const anthropicBody = JSON.stringify({
   messages: [{ role: 'user', content: prompt }],
 });
 
-return {
+return [{
   json: {
     _skipSummary: false,
     _record: record,
@@ -99,7 +137,7 @@ return {
     _name: name,
     anthropicBody,
   }
-};
+}];
 `;
 
 // ---------------------------------------------------------------------------
@@ -264,15 +302,47 @@ fetchBlocks.retryOnFail = true;
 fetchBlocks.maxTries = 3;
 fetchBlocks.waitBetweenTries = 1000;
 
-// 3. Build Summary Prompt
-const buildSummaryPrompt = createNode(
-  'Build Summary Prompt',
+// 3. Extract Child Block IDs — identify blocks that need child fetching
+const extractChildBlockIds = createNode(
+  'Extract Child Block IDs',
   'n8n-nodes-base.code',
-  { jsCode: BUILD_SUMMARY_PROMPT_CODE, mode: 'runOnceForEachItem' },
+  { jsCode: EXTRACT_CHILD_BLOCK_IDS_CODE, mode: 'runOnceForAllItems' },
   { position: [500, 300], typeVersion: 2 },
 );
 
-// 4. Summarize with Haiku
+// 4. Fetch Child Blocks — get content inside toggleable headings
+const fetchChildBlocks = createNode(
+  'Fetch Child Blocks',
+  'n8n-nodes-base.httpRequest',
+  {
+    method: 'GET',
+    url: '=https://api.notion.com/v1/blocks/{{ $json.blockId }}/children?page_size=100',
+    authentication: 'predefinedCredentialType',
+    nodeCredentialType: 'notionApi',
+    sendHeaders: true,
+    headerParameters: {
+      parameters: [
+        { name: 'Notion-Version', value: '2022-06-28' },
+      ],
+    },
+    options: {},
+  },
+  { position: [750, 300], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
+);
+fetchChildBlocks.continueOnFail = true;
+fetchChildBlocks.retryOnFail = true;
+fetchChildBlocks.maxTries = 3;
+fetchChildBlocks.waitBetweenTries = 1000;
+
+// 5. Build Summary Prompt — aggregate top-level + child block text
+const buildSummaryPrompt = createNode(
+  'Build Summary Prompt',
+  'n8n-nodes-base.code',
+  { jsCode: BUILD_SUMMARY_PROMPT_CODE, mode: 'runOnceForAllItems' },
+  { position: [1000, 300], typeVersion: 2 },
+);
+
+// 6. Summarize with Haiku
 const summarize = createNode(
   'Summarize with Haiku',
   'n8n-nodes-base.httpRequest',
@@ -299,22 +369,22 @@ const summarize = createNode(
       },
     },
   },
-  { position: [750, 300], typeVersion: 4.2, credentials: ANTHROPIC_CREDENTIAL },
+  { position: [1250, 300], typeVersion: 4.2, credentials: ANTHROPIC_CREDENTIAL },
 );
 summarize.retryOnFail = true;
 summarize.maxTries = 2;
 summarize.waitBetweenTries = 1000;
 summarize.continueOnFail = true;
 
-// 5. Build Activity Request
+// 7. Build Activity Request
 const buildActivityRequest = createNode(
   'Build Activity Request',
   'n8n-nodes-base.code',
   { jsCode: BUILD_ACTIVITY_REQUEST_CODE, mode: 'runOnceForEachItem' },
-  { position: [1000, 300], typeVersion: 2 },
+  { position: [1500, 300], typeVersion: 2 },
 );
 
-// 6. Create Activity
+// 8. Create Activity
 const createActivity = createNode(
   'Create Activity',
   'n8n-nodes-base.httpRequest',
@@ -341,7 +411,7 @@ const createActivity = createNode(
       },
     },
   },
-  { position: [1250, 300], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
+  { position: [1750, 300], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
 );
 createActivity.retryOnFail = true;
 createActivity.maxTries = 3;
@@ -355,6 +425,8 @@ export default createWorkflow('VF Notes Webhook', {
   nodes: [
     trigger,
     fetchBlocks,
+    extractChildBlockIds,
+    fetchChildBlocks,
     buildSummaryPrompt,
     summarize,
     buildActivityRequest,
@@ -362,7 +434,9 @@ export default createWorkflow('VF Notes Webhook', {
   ],
   connections: [
     connect(trigger, fetchBlocks),
-    connect(fetchBlocks, buildSummaryPrompt),
+    connect(fetchBlocks, extractChildBlockIds),
+    connect(extractChildBlockIds, fetchChildBlocks),
+    connect(fetchChildBlocks, buildSummaryPrompt),
     connect(buildSummaryPrompt, summarize),
     connect(summarize, buildActivityRequest),
     connect(buildActivityRequest, createActivity),
