@@ -78,7 +78,7 @@ const filterFiles = createNode(
       conditions: [
         {
           id: crypto.randomUUID(),
-          leftValue: '={{ $json[".tag"] }}',
+          leftValue: '={{ $json.type }}',
           rightValue: 'file',
           operator: {
             type: 'string',
@@ -97,12 +97,15 @@ const sortByDate = createNode(
   'Sort by Date',
   'n8n-nodes-base.sort',
   {
-    sortField: [
-      {
-        fieldName: 'lastModifiedServer',
-        order: 'descending',
-      },
-    ],
+    sortFieldsUi: {
+      sortField: [
+        {
+          fieldName: 'lastModifiedServer',
+          order: 'descending',
+        },
+      ],
+    },
+    options: {},
   },
   { position: [600, 0], typeVersion: 1 },
 );

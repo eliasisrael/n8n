@@ -768,6 +768,25 @@ Mailchimp's ADDRESS merge field requires a **structured JSON object** with `addr
 
 ---
 
+## Sort node (n8n-nodes-base.sort) v1
+
+The Sort node's parameter structure requires a `sortFieldsUi` wrapper around the `sortField` array:
+
+```js
+{
+  sortFieldsUi: {
+    sortField: [
+      { fieldName: 'lastModifiedServer', order: 'descending' }
+    ],
+  },
+  options: {},
+}
+```
+
+**Wrong**: putting `sortField` directly at the top level (e.g., `{ sortField: [...] }`) — this silently produces a node with no sort configured.
+
+---
+
 ## Maintenance mode gate pattern
 
 Both the Notion Webhook Router and Mailchimp Audience Hook support a Redis-based maintenance mode that silently drops events while returning 200 to callers:
