@@ -1,0 +1,256 @@
+{
+  "updatedAt": "2025-04-06T15:12:30.422Z",
+  "createdAt": "2025-04-06T12:52:43.217Z",
+  "id": "TzGhChdFzMq3hSeP",
+  "name": "Mark Downloads",
+  "active": false,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -260,
+        0
+      ],
+      "id": "5d63e405-94d0-4d3e-b83d-03ff321902df",
+      "name": "When clicking ‘Test workflow’"
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "getAll",
+        "databaseId": {
+          "__rl": true,
+          "value": "1688ebaf-15ee-806b-bd12-dd7c8caf2bdd",
+          "mode": "list",
+          "cachedResultName": "Web DB: Master Contacts",
+          "cachedResultUrl": "https://www.notion.so/1688ebaf15ee806bbd12dd7c8caf2bdd"
+        },
+        "returnAll": true,
+        "filterType": "manual",
+        "filters": {
+          "conditions": [
+            {
+              "key": "Sources|multi_select",
+              "condition": "contains",
+              "multiSelectValue": "paper download"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [
+        400,
+        0
+      ],
+      "id": "ff174a8a-0d92-415b-b032-d70ed3e23b79",
+      "name": "Notion",
+      "credentials": {
+        "notionApi": {
+          "id": "lOLrwKiRnGrhZ9xM",
+          "name": "Eve Notion Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "operation": "get",
+        "list": "77d135987f",
+        "email": "={{ $json.property_identifier }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mailchimp",
+      "typeVersion": 1,
+      "position": [
+        780,
+        0
+      ],
+      "id": "59284cab-0bed-48bc-b1df-b4d4023751ab",
+      "name": "Mailchimp",
+      "executeOnce": false,
+      "credentials": {
+        "mailchimpOAuth2Api": {
+          "id": "DtyHZOOulvefkbC3",
+          "name": "Mailchimp account"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "getAll",
+        "databaseId": {
+          "__rl": true,
+          "value": "1148ebaf-15ee-8079-9917-c5158470b3e0",
+          "mode": "list",
+          "cachedResultName": "Web DB: Downloads",
+          "cachedResultUrl": "https://www.notion.so/1148ebaf15ee80799917c5158470b3e0"
+        },
+        "returnAll": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [
+        -80,
+        0
+      ],
+      "id": "f1cc0fdb-142e-4e92-9a55-0bfc6a584c3d",
+      "name": "Notion1",
+      "credentials": {
+        "notionApi": {
+          "id": "lOLrwKiRnGrhZ9xM",
+          "name": "Eve Notion Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json._links.find(l => l.rel == \"events\").href }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "name",
+              "value": "paper_downloaded_website"
+            },
+            {
+              "name": "properties",
+              "value": "={\n  \"paper\": \"{{$('Paper Map').item.json.paperMap[$('Notion').item.json.property_papers[0]] }}\"\n}"
+            },
+            {
+              "name": "is_syncing",
+              "value": "={{ false }}"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        -80
+      ],
+      "id": "47eb7899-70c1-4f31-8276-ca6ca0ef9ba1",
+      "name": "HTTP Request",
+      "executeOnce": false,
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "wz1MG3unrTX7XIXF",
+          "name": "Mailchimp Basic Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Loop over input items and add a new field called 'myNewField' to the JSON of each one\nlet paperMap = {};\n\nfor (const item of $input.all()) {\n  paperMap[item.json.id] = item.json.name;\n}\n\nreturn [{\"paperMap\": paperMap}]"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        140,
+        0
+      ],
+      "id": "3d14eb2d-dce8-4353-8100-1db8fddbccf5",
+      "name": "Paper Map"
+    },
+    {
+      "parameters": {
+        "content": "## Downloads Data Migration \nOnly run this node by hand to capture all of the people in the master contacts table who have downloaded papers from the website.\n\nThis was last run on 4/6/2025\n\nYou probably do not need to run it again, but it is here for reference.",
+        "width": 560,
+        "color": 3
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        340,
+        -200
+      ],
+      "typeVersion": 1,
+      "id": "a8600809-f0a7-4274-8b3c-521d22df7cc1",
+      "name": "Sticky Note"
+    }
+  ],
+  "connections": {
+    "When clicking ‘Test workflow’": {
+      "main": [
+        [
+          {
+            "node": "Notion1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notion": {
+      "main": [
+        [
+          {
+            "node": "Mailchimp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mailchimp": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notion1": {
+      "main": [
+        [
+          {
+            "node": "Paper Map",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Paper Map": {
+      "main": [
+        [
+          {
+            "node": "Notion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "pinData": {},
+  "versionId": "b8d48b50-7661-4be1-bf87-82cf5d0c9ad2",
+  "tags": []
+}

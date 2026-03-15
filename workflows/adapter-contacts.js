@@ -9,7 +9,6 @@ export default createAdapter({
   fieldMappings: [
     { name: 'id', value: '={{ $json.id }}' },
     { name: 'Name', value: '={{ $json.name }}' },
-    { name: 'Papers', value: '={{ $json.property_papers }}', type: 'array' },
     { name: 'Birthday', value: '={{ $json.property_birthday }}' },
     { name: 'Contact form msg', value: '={{ $json.property_contact_form_msg }}' },
     { name: 'Country', value: '={{ $json.property_country }}' },

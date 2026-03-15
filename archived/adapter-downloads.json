@@ -1,0 +1,312 @@
+{
+  "updatedAt": "2026-03-15T00:13:58.378Z",
+  "createdAt": "2026-03-13T01:40:43.863Z",
+  "id": "4alB6hjFKWK2v9Lf",
+  "name": "Adapter: Downloads",
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "1c0d3850-cb9c-4e05-a5be-3ccc4a744e6c",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "adapter-downloads",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "adapter-downloads"
+    },
+    {
+      "id": "927ba636-3cb7-4997-98cc-f4ebc2fac0d7",
+      "name": "Verify QStash Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        250,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst crypto = require('crypto');\n\nconst signature = $json.headers['upstash-signature'];\nif (!signature) {\n  throw new Error('Missing Upstash-Signature header');\n}\n\n// Split JWT: header.payload.signature\nconst parts = signature.split('.');\nif (parts.length !== 3) {\n  throw new Error('Invalid JWT format');\n}\n\nconst [headerB64, payloadB64, sigB64] = parts;\nconst signingInput = headerB64 + '.' + payloadB64;\n\n// Try current key first, then next key (for rotation)\nconst currentKey = 'sig_5nCeQNJY8Fu4nmpL4TRFMrcPBFgd';\nconst nextKey = 'sig_53j2JaE7MBtvDSuXwRUSUwGDAMEf';\n\nfunction verify(key) {\n  const hmac = crypto.createHmac('sha256', key);\n  hmac.update(signingInput);\n  const expected = hmac.digest('base64url');\n  return expected === sigB64;\n}\n\nif (!verify(currentKey) && !verify(nextKey)) {\n  throw new Error('QStash signature verification failed');\n}\n\n// Decode and validate claims\nconst payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString());\nif (payload.iss !== 'Upstash') {\n  throw new Error('Invalid issuer: ' + payload.iss);\n}\nif (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) {\n  throw new Error('Token expired');\n}\n\n// Verify body hash\nconst rawBody = JSON.stringify($json.body || $json);\nconst bodyHash = crypto.createHash('sha256').update(rawBody).digest('base64url');\nif (payload.body && payload.body !== bodyHash) {\n  // Body hash mismatch — log but don't fail (QStash may encode differently)\n  // throw new Error('Body hash mismatch');\n}\n\nreturn { json: $json };\n"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "52ca8ddf-94ec-4c35-a5c9-558696c99b4b",
+      "name": "Respond 401",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        500,
+        480
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.message || \"Unauthorized\" }}",
+        "options": {
+          "responseCode": 401
+        }
+      }
+    },
+    {
+      "id": "e6502aad-fe2e-4b0d-82e1-6ed0faaa72f5",
+      "name": "Fetch Notion Page",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [
+        500,
+        300
+      ],
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "get",
+        "pageId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.body.entity.id }}"
+        },
+        "simple": true,
+        "options": {}
+      },
+      "credentials": {
+        "notionApi": {
+          "id": "lOLrwKiRnGrhZ9xM",
+          "name": "Eve Notion Account"
+        }
+      },
+      "retryOnFail": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "22e1d502-8b46-4d29-b03c-af14593045fb",
+      "name": "Respond 500",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        750,
+        480
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.message || \"Failed to fetch Notion page\" }}",
+        "options": {
+          "responseCode": 500
+        }
+      }
+    },
+    {
+      "id": "59b45151-2ee0-4819-b098-a37952662232",
+      "name": "Format Payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        750,
+        300
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a684c020-595b-422b-8334-272785bc40ae",
+              "name": "id",
+              "value": "={{ $json.id }}",
+              "type": "string"
+            },
+            {
+              "id": "11efdc9a-b245-4334-a23a-d2c2836867aa",
+              "name": "Name",
+              "value": "={{ $json.name }}",
+              "type": "string"
+            },
+            {
+              "id": "aae0ff4b-65ef-444d-8dbe-5df9f7bc8de2",
+              "name": "Thumbnail",
+              "value": "={{ $json.property_thumbnail }}",
+              "type": "array"
+            },
+            {
+              "id": "3b0dad31-cce6-4ad2-aa63-0171fda15963",
+              "name": "WebflowId",
+              "value": "={{ $json.property_webflow_id }}",
+              "type": "string"
+            },
+            {
+              "id": "093c95be-fe58-42ed-a8db-2a43c3629930",
+              "name": "Bullet 1",
+              "value": "={{ $json.property_bullet_1 }}",
+              "type": "string"
+            },
+            {
+              "id": "138c7e1b-1a86-4431-9f31-0567cd0c0e80",
+              "name": "Bullet 2",
+              "value": "={{ $json.property_bullet_2 }}",
+              "type": "string"
+            },
+            {
+              "id": "9520410c-d79e-4d41-8616-35cf3c3b3d1e",
+              "name": "Bullet 3",
+              "value": "={{ $json.property_bullet_3 }}",
+              "type": "string"
+            },
+            {
+              "id": "4f244110-7104-4797-9f6a-32b910a00942",
+              "name": "Visible",
+              "value": "={{ $json.property_visible }}",
+              "type": "boolean"
+            },
+            {
+              "id": "00f1f6ed-292b-406c-b50c-ed1fc762a611",
+              "name": "Description",
+              "value": "={{ $json.property_description }}",
+              "type": "string"
+            },
+            {
+              "id": "85355d1e-6960-4242-ab0e-3520ae9939ed",
+              "name": "Title",
+              "value": "={{ $json.property_title }}",
+              "type": "string"
+            },
+            {
+              "id": "b3dce049-c040-4cb0-9129-f6369ac919cf",
+              "name": "Publication Date",
+              "value": "={{ $json.property_publication_date }}",
+              "type": "object"
+            },
+            {
+              "id": "22c82bac-c3a3-4158-b81d-2dc0202f6863",
+              "name": "Download File",
+              "value": "={{ $json.property_download_file }}",
+              "type": "array"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
+      }
+    },
+    {
+      "id": "edfcb034-d333-4da1-846b-bbf30541e9a0",
+      "name": "Execute Downloads Workflow",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1000,
+        300
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "oPFK3KGX1tTItJHt"
+        },
+        "options": {}
+      },
+      "retryOnFail": true
+    },
+    {
+      "id": "3085ca8e-31a1-4c38-8258-2428faa2e210",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1250,
+        300
+      ],
+      "parameters": {
+        "respondWith": "noData",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Verify QStash Signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify QStash Signature": {
+      "main": [
+        [
+          {
+            "node": "Fetch Notion Page",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 401",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Notion Page": {
+      "main": [
+        [
+          {
+            "node": "Format Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 500",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Payload": {
+      "main": [
+        [
+          {
+            "node": "Execute Downloads Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Downloads Workflow": {
+      "main": [
+        [
+          {
+            "node": "Respond 200",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "EZTb8m4htw60nP0b",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "f6a0f739-fa04-45c1-982b-680264abdff1",
+  "tags": []
+}

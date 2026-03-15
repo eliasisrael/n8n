@@ -19,9 +19,8 @@
  *     │    → Build Update Record → Update Subscribers
  *     │       └→ If Claiming → Build Writeback URL → Write URL to Notion
  *     ├─[Update — tags] Filter Tags Changed → Build Tags → Record Tags
- *     ├─[Update — download] If paper downloaded → Record download event
- *     └─[Create] Insert New Subs ─┬→ Filter2 → Record download event1
- *                                  └→ If Claiming (New) → Build Writeback URL (New) → Write URL to Notion (New)
+ *     └─[Create] Insert New Subs
+ *                └→ If Claiming (New) → Build Writeback URL (New) → Write URL to Notion (New)
  *
  * Replaces: server/create-or-update-mailchimp-record.json (ID: qvhhwm0l47pZnP8c)
  */
@@ -60,7 +59,6 @@ const trigger = createNode(
       PHONE: '',
       BIRTHDAY: '',
       COMPANY: '',
-      DOWNLOAD: 'Consent Is Dead: How Can We Revive User-Powered Permissions?',
       Tags: [],
       id: '',
       notion_page_id: '',
@@ -151,7 +149,7 @@ const notionId = ($json.merge_fields && $json.merge_fields.NOTIONID) || '';
 const incomingId = $('Enforce Required Format').item.json.notion_page_id || '';
 
 if (!incomingId) {
-  // Non-Notion caller (e.g. paper download) — bypass guard
+  // Non-Notion caller — bypass guard
   $input.item.json.guard_action = 'proceed';
   $input.item.json.should_claim = false;
 } else if (!notionId || notionId === incomingId) {
@@ -425,12 +423,6 @@ const buildUpdate = createNode(
         },
         {
           id: crypto.randomUUID(),
-          name: 'DOWNLOAD',
-          value: "={{ $('Enforce Required Format').item.json.DOWNLOAD || '' }}",
-          type: 'string',
-        },
-        {
-          id: crypto.randomUUID(),
           name: 'Tags',
           value: "={{ $('Enforce Required Format').item.json.Tags }}",
           type: 'array',
@@ -527,73 +519,11 @@ const recordTags = createNode(
 recordTags.retryOnFail = true;
 recordTags.waitBetweenTries = 2000;
 
-// 14. If paper downloaded — check DOWNLOAD field is not empty
-//     Now branches directly from Switch (independent of merge field updates)
-const ifPaperDownloaded = createNode(
-  'If paper downloaded',
-  'n8n-nodes-base.filter',
-  {
-    conditions: {
-      options: {
-        caseSensitive: true,
-        leftValue: '',
-        typeValidation: 'strict',
-        version: 2,
-      },
-      conditions: [
-        {
-          id: crypto.randomUUID(),
-          leftValue: "={{ $('Enforce Required Format').item.json.DOWNLOAD }}",
-          rightValue: '',
-          operator: { type: 'string', operation: 'notEmpty', singleValue: true },
-        },
-      ],
-      combinator: 'and',
-    },
-    options: {},
-  },
-  { position: [1728, 48], typeVersion: 2.2 },
-);
-
-// 15. Record download event — POST paper_downloaded_website event to Mailchimp
-//     Now references _links from the NOTIONID Guard output (which has the
-//     Mailchimp lookup result), since this path is independent of Update Subscribers
-const recordDownload = createNode(
-  'Record download event',
-  'n8n-nodes-base.httpRequest',
-  {
-    method: 'POST',
-    url: "={{ $('NOTIONID Guard').item.json._links.find(link => link.rel == \"events\").href }}",
-    authentication: 'predefinedCredentialType',
-    nodeCredentialType: 'mailchimpOAuth2Api',
-    sendBody: true,
-    bodyParameters: {
-      parameters: [
-        {
-          name: 'properties',
-          value: '={ "paper": "{{ $(\'Enforce Required Format\').item.json.DOWNLOAD }}" }',
-        },
-        { name: 'name', value: 'paper_downloaded_website' },
-      ],
-    },
-    options: {},
-  },
-  {
-    position: [1952, 48],
-    typeVersion: 4.2,
-    credentials: {
-      ...MAILCHIMP_CREDENTIAL,
-      httpBasicAuth: { id: 'wz1MG3unrTX7XIXF', name: 'Mailchimp Basic Auth' },
-    },
-  },
-);
-recordDownload.retryOnFail = true;
-
 // ---------------------------------------------------------------------------
 // Create branch
 // ---------------------------------------------------------------------------
 
-// 16. Insert New Subs — Mailchimp create with NOTIONID
+// 14. Insert New Subs — Mailchimp create with NOTIONID
 const insertNew = createNode(
   'Insert New Subs',
   'n8n-nodes-base.mailchimp',
@@ -618,58 +548,6 @@ const insertNew = createNode(
   { position: [1728, -240], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
 );
 insertNew.retryOnFail = true;
-
-// 17. Filter2 — check if new sub has a download
-const filter2 = createNode(
-  'Filter2',
-  'n8n-nodes-base.filter',
-  {
-    conditions: {
-      options: {
-        caseSensitive: true,
-        leftValue: '',
-        typeValidation: 'strict',
-        version: 2,
-      },
-      conditions: [
-        {
-          id: crypto.randomUUID(),
-          leftValue: "={{ $json.input.DOWNLOAD }}",
-          rightValue: '',
-          operator: { type: 'string', operation: 'notEmpty', singleValue: true },
-        },
-      ],
-      combinator: 'and',
-    },
-    options: {},
-  },
-  { position: [1952, -336], typeVersion: 2.2 },
-);
-
-// 18. Record download event1 — POST download event for new subscribers
-const recordDownload1 = createNode(
-  'Record download event1',
-  'n8n-nodes-base.httpRequest',
-  {
-    method: 'POST',
-    url: "={{ $('Insert New Subs').item.json.mailchimp._links.find(link => link.rel == \"events\").href }}",
-    authentication: 'predefinedCredentialType',
-    nodeCredentialType: 'mailchimpOAuth2Api',
-    sendBody: true,
-    bodyParameters: {
-      parameters: [
-        {
-          name: 'properties',
-          value: '={ "paper": "{{ $json.input.DOWNLOAD }}" }',
-        },
-        { name: 'name', value: 'paper_downloaded_website' },
-      ],
-    },
-    options: {},
-  },
-  { position: [2176, -336], typeVersion: 4.2, credentials: MAILCHIMP_CREDENTIAL },
-);
-recordDownload1.retryOnFail = true;
 
 // ---------------------------------------------------------------------------
 // Notion write-back: store Mailchimp profile URL on the Notion contact
@@ -831,12 +709,10 @@ export default createWorkflow('Create or Update Mailchimp Record', {
     filterMergeFields, removeCleaned, buildUpdate, updateSubs,
     // Update branch — tags path
     filterTagsChanged, buildTags, recordTags,
-    // Update branch — download path
-    ifPaperDownloaded, recordDownload,
     // Update write-back
     claimFilterUpdate, buildWritebackUpdate, writeUrlUpdate,
     // Create branch
-    insertNew, filter2, recordDownload1,
+    insertNew,
     // Create write-back
     claimFilterCreate, buildWritebackCreate, writeUrlCreate,
   ],
@@ -848,10 +724,9 @@ export default createWorkflow('Create or Update Mailchimp Record', {
     connect(enforceEmailLower, notionIdGuard),
     connect(notionIdGuard, guardFilter),
     connect(guardFilter, switchNode),
-    // Switch output 0 (Update) → three independent paths
+    // Switch output 0 (Update) → two independent paths
     connect(switchNode, filterMergeFields, 0),
     connect(switchNode, filterTagsChanged, 0),
-    connect(switchNode, ifPaperDownloaded, 0),
     // Switch output 1 (Create) → create branch
     connect(switchNode, insertNew, 1),
     // Merge fields path: filter → remove cleaned → build → update
@@ -865,11 +740,6 @@ export default createWorkflow('Create or Update Mailchimp Record', {
     // Tags path: filter → build tags → record tags
     connect(filterTagsChanged, buildTags),
     connect(buildTags, recordTags),
-    // Download path: filter → record event
-    connect(ifPaperDownloaded, recordDownload),
-    // Create branch
-    connect(insertNew, filter2),
-    connect(filter2, recordDownload1),
     // Create write-back (parallel fork from Insert New Subs)
     connect(insertNew, claimFilterCreate),
     connect(claimFilterCreate, buildWritebackCreate),

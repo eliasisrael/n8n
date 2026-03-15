@@ -70,11 +70,6 @@ const TOPICS = [
     endpoints: ['adapter-appearances', 'adapter-comms-pipeline'],
   },
   {
-    topic: 'notion-downloads',
-    databaseId: '1148ebaf-15ee-8079-9917-c5158470b3e0',
-    endpoints: ['adapter-downloads'],
-  },
-  {
     topic: 'notion-testimonials',
     databaseId: 'aa848058-0b30-4782-bcc1-f56be736399e',
     endpoints: ['adapter-testimonials'],

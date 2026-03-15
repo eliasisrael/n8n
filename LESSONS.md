@@ -656,7 +656,7 @@ When placing nodes programmatically (via the API or in workflow JS files), follo
 **Implementation details**:
 - The guard is a Code node (`NOTIONID Guard`) placed between the Mailchimp lookup and the Update/Create Switch
 - A `should_claim` flag triggers an update even when no other fields changed, ensuring NOTIONID gets written on first contact
-- Callers without a `notion_page_id` (e.g. paper download forms) bypass the guard entirely
+- Callers without a `notion_page_id` bypass the guard entirely
 - The workflow accepts `id` or `notion_page_id` — the Enforce Required Format node normalizes to `notion_page_id`
 - Both Update and Create paths write NOTIONID into Mailchimp merge fields
 

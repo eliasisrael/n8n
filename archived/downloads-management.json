@@ -1,0 +1,329 @@
+{
+  "updatedAt": "2025-04-13T12:16:57.645Z",
+  "createdAt": "2025-04-13T11:50:31.530Z",
+  "id": "oPFK3KGX1tTItJHt",
+  "name": "Downloads Management",
+  "active": false,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b280b992-96aa-412f-848a-de8b6b1ac44b",
+              "leftValue": "={{ $json[\"Webflow ID\"] }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -880,
+        300
+      ],
+      "id": "2f30e6a5-fadd-442a-a9e7-6aab482bc09c",
+      "name": "Already Stored?"
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "siteId": "66022db75af9853636d1ce23",
+        "collectionId": "66fd531b237baae4a78403a0",
+        "live": "",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "notion-id",
+              "fieldValue": "={{ $json.id }}"
+            },
+            {
+              "fieldId": "publication-date",
+              "fieldValue": "={{ $json[\"Publication Date\"].start }}"
+            },
+            {
+              "fieldId": "visible",
+              "fieldValue": "={{ $json.Visible }}"
+            },
+            {
+              "fieldId": "download-file",
+              "fieldValue": "={{ $json[\"Download File\"][0] }}"
+            },
+            {
+              "fieldId": "thumbnail",
+              "fieldValue": "={{ $json.Thumbnail[0] }}"
+            },
+            {
+              "fieldId": "description",
+              "fieldValue": "={{ $json.Description }}"
+            },
+            {
+              "fieldId": "bullet-1",
+              "fieldValue": "={{ $json[\"Bullet 1\"] }}"
+            },
+            {
+              "fieldId": "bullet-2",
+              "fieldValue": "={{ $json[\"Bullet 2\"] }}"
+            },
+            {
+              "fieldId": "bullet-3",
+              "fieldValue": "={{ $json[\"Bullet 3\"] }}"
+            },
+            {
+              "fieldId": "name",
+              "fieldValue": "={{ $json.Title }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.webflow",
+      "typeVersion": 2,
+      "position": [
+        -300,
+        560
+      ],
+      "id": "0ace8d44-87a0-4044-9322-557c80e66d8d",
+      "name": "Webflow",
+      "credentials": {
+        "webflowOAuth2Api": {
+          "id": "7uo2MfFKQm2Xiodm",
+          "name": "Webflow account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "update",
+        "pageId": {
+          "__rl": true,
+          "value": "={{ $json.fieldData[\"notion-id\"] }}",
+          "mode": "id"
+        },
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "WebflowId|rich_text",
+              "textContent": "={{ $json.id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [
+        20,
+        560
+      ],
+      "id": "9389b99b-ba85-4cb4-a1e9-284c944ac2e1",
+      "name": "Store Webflow ID in Notion",
+      "credentials": {
+        "notionApi": {
+          "id": "lOLrwKiRnGrhZ9xM",
+          "name": "Eve Notion Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "siteId": "66022db75af9853636d1ce23",
+        "collectionId": "66fd531b237baae4a78403a0",
+        "itemId": "={{ $json[\"Webflow ID\"] }}",
+        "live": true,
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "name",
+              "fieldValue": "={{ $json.Title }}"
+            },
+            {
+              "fieldId": "publication-date",
+              "fieldValue": "={{ $json[\"Publication Date\"].start }}"
+            },
+            {
+              "fieldId": "visible",
+              "fieldValue": "={{ $json.Visible }}"
+            },
+            {
+              "fieldId": "download-file",
+              "fieldValue": "={{ $json[\"Download File\"][0] }}"
+            },
+            {
+              "fieldId": "thumbnail",
+              "fieldValue": "={{ $json.Thumbnail[0] }}"
+            },
+            {
+              "fieldId": "description",
+              "fieldValue": "={{ $json.Description }}"
+            },
+            {
+              "fieldId": "bullet-1",
+              "fieldValue": "={{ $json[\"Bullet 1\"] }}"
+            },
+            {
+              "fieldId": "bullet-2",
+              "fieldValue": "={{ $json[\"Bullet 2\"] }}"
+            },
+            {
+              "fieldId": "bullet-3",
+              "fieldValue": "={{ $json[\"Bullet 3\"] }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.webflow",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        -20
+      ],
+      "id": "d999a994-4d00-4c80-9be1-8359163ef746",
+      "name": "Update Webflow Record",
+      "credentials": {
+        "webflowOAuth2Api": {
+          "id": "7uo2MfFKQm2Xiodm",
+          "name": "Webflow account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Loop over input items and add a new field called 'myNewField' to the JSON of each one\nfor (const item of $input.all()) {\n  var fixed = item.json[\"Bullet 1\"];\n  item.json[\"Bullet 1\"] = fixed.replace(/\\s+/g,\" \").trim();\n  fixed = item.json[\"Bullet 2\"];\n  item.json[\"Bullet 2\"] = fixed.replace(/\\s+/g,\" \").trim();\n  fixed = item.json[\"Bullet 3\"];\n  item.json[\"Bullet 3\"] = fixed.replace(/\\s+/g, \" \").trim();\n  fixed = item.json[\"Description\"];\n  item.json[\"Description\"] = fixed.replace(/\\s+/g,\" \").trim();\n}\n\nreturn $input.all();"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1140,
+        300
+      ],
+      "id": "79e3e712-01ca-4eb4-a20f-cc968e70bf61",
+      "name": "Enforce Description Bullet Formats"
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -1380,
+        300
+      ],
+      "id": "f9aee8af-e915-4263-9c5c-2ac52f506794",
+      "name": "When Executed by Another Workflow"
+    }
+  ],
+  "connections": {
+    "Already Stored?": {
+      "main": [
+        [
+          {
+            "node": "Update Webflow Record",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Webflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webflow": {
+      "main": [
+        [
+          {
+            "node": "Store Webflow ID in Notion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enforce Description Bullet Formats": {
+      "main": [
+        [
+          {
+            "node": "Already Stored?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Webflow ID in Notion": {
+      "main": [
+        []
+      ]
+    },
+    "Update Webflow Record": {
+      "main": [
+        []
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Enforce Description Bullet Formats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": {
+    "node:Updated Download in Notion": {
+      "lastTimeChecked": "2025-04-12T21:52:00.000Z",
+      "possibleDuplicates": [
+        "1d38ebaf-15ee-802b-bb15-d7720ad05786"
+      ]
+    },
+    "node:New Download in Notion": {
+      "lastTimeChecked": "2025-04-12T13:26:00.000Z"
+    }
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "pinData": {},
+  "versionId": "4b3152c5-802c-456e-b8ea-f2bdd5124beb",
+  "tags": [
+    {
+      "updatedAt": "2025-03-30T21:04:49.483Z",
+      "createdAt": "2025-03-30T21:04:49.483Z",
+      "id": "mSZQb74EXyrIkTsb",
+      "name": "website"
+    },
+    {
+      "updatedAt": "2025-02-16T13:01:39.065Z",
+      "createdAt": "2025-02-16T13:01:39.065Z",
+      "id": "IzLCnCZq9323eiAZ",
+      "name": "Production"
+    }
+  ]
+}
