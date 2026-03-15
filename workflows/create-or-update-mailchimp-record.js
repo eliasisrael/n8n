@@ -351,7 +351,9 @@ const filterMergeFields = createNode(
   { position: [1728, -720], typeVersion: 2.2 },
 );
 
-// 8b. Filter: Tags Changed — only call Record Tags when tags actually differ
+// 8b. Filter: Tags Changed — only update tags when incoming has tags NOT already
+// in the existing Mailchimp record (i.e., incoming is not a subset of existing).
+// If Mailchimp already has all incoming tags, skip the update.
 const filterTagsChanged = createNode(
   'Filter Tags Changed',
   'n8n-nodes-base.filter',
@@ -366,9 +368,9 @@ const filterTagsChanged = createNode(
       conditions: [
         {
           id: crypto.randomUUID(),
-          leftValue: "={{ $json.tags.map(x => x.name).sort().join('|') }}",
-          rightValue: "={{ $('Enforce Required Format').item.json.Tags.sort().join('|') }}",
-          operator: { type: 'string', operation: 'notEquals' },
+          leftValue: "={{ ($('Enforce Required Format').item.json.Tags || []).some(t => !($json.tags || []).map(x => x.name).includes(t)) }}",
+          rightValue: true,
+          operator: { type: 'boolean', operation: 'equals' },
         },
       ],
       combinator: 'and',
