@@ -757,6 +757,17 @@ The n8n Code node sandbox does **not** expose the global `fetch()` function. Att
 
 When an HTTP Request node replaces `$json` with the API response, use a downstream Code node with a back-reference like `$('OriginalNode').item.json` to restore the original payload.
 
+## Mailchimp node error responses with continueRegularOutput
+
+When a Mailchimp node has `onError: 'continueRegularOutput'`, **both** 404 (not found) and 5xx (service unavailable) errors produce output items with `{ "error": "<message>" }` — there is no status code or error type field. You must match on the error message text to distinguish them:
+
+- **Not found (404)**: `{ "error": "The resource you are requesting could not be found" }`
+- **Service unavailable (5xx)**: `{ "error": "Service unavailable - try again later or consider setting this node to retry automatically (in the node settings)" }`
+
+Always add a validation node after a Mailchimp lookup with `continueRegularOutput` to check the error message and throw on non-404 errors. Otherwise, API outages silently create duplicate records.
+
+---
+
 ## Mailchimp ADDRESS merge field
 
 Mailchimp's ADDRESS merge field requires a **structured JSON object** with `addr1`, `addr2`, `city`, `state`, `zip`, `country`. Sending a flat string or an object with empty required fields causes a 400 error: "Please enter a complete address".
