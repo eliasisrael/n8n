@@ -15,10 +15,11 @@
  * Flow:
  *   Trigger → Enforce Required Format → Find Existing Subs → Enforce Email
  *   Lowercase → NOTIONID Guard → Guard Filter → Switch
- *     ├─[Update] Filter Unchanged → Remove Cleaned → Build Update Record
- *     │    → Update Subscribers ─┬→ Build Tags → Record Tags
- *     │    │                     └→ If Claiming → Build Writeback URL → Write URL to Notion
- *     │    → If paper downloaded → Record download event
+ *     ├─[Update — merge fields] Filter Merge Fields Changed → Remove Cleaned
+ *     │    → Build Update Record → Update Subscribers
+ *     │       └→ If Claiming → Build Writeback URL → Write URL to Notion
+ *     ├─[Update — tags] Filter Tags Changed → Build Tags → Record Tags
+ *     ├─[Update — download] If paper downloaded → Record download event
  *     └─[Create] Insert New Subs ─┬→ Filter2 → Record download event1
  *                                  └→ If Claiming (New) → Build Writeback URL (New) → Write URL to Notion (New)
  *
@@ -263,13 +264,14 @@ const switchNode = createNode(
 );
 
 // ---------------------------------------------------------------------------
-// Update branch
+// Update branch — three independent paths from Switch to avoid unnecessary
+// Mailchimp API calls (each call triggers the Audience webhook)
 // ---------------------------------------------------------------------------
 
-// 8. Filter Out Unchanged Entries — OR combinator: skip if nothing changed
-//    Includes should_claim as a trigger (claiming NOTIONID counts as a change)
-const filterUnchanged = createNode(
-  'Filter Out Unchanged Entries',
+// 8a. Filter: Merge Fields Changed — only call Update Subscribers when
+//     FNAME/LNAME/COMPANY/full_name actually differ, or NOTIONID needs claiming
+const filterMergeFields = createNode(
+  'Filter Merge Fields Changed',
   'n8n-nodes-base.filter',
   {
     conditions: {
@@ -306,18 +308,6 @@ const filterUnchanged = createNode(
         },
         {
           id: crypto.randomUUID(),
-          leftValue: "={{ $('Enforce Required Format').item.json.DOWNLOAD }}",
-          rightValue: '',
-          operator: { type: 'string', operation: 'notEmpty', singleValue: true },
-        },
-        {
-          id: crypto.randomUUID(),
-          leftValue: "={{ $json.tags.map(x => x.name).sort().join('|') }}",
-          rightValue: "={{ $('Enforce Required Format').item.json.Tags.sort().join('|') }}",
-          operator: { type: 'string', operation: 'notEquals' },
-        },
-        {
-          id: crypto.randomUUID(),
           leftValue: '={{ $json.should_claim }}',
           rightValue: '',
           operator: { type: 'boolean', operation: 'true', singleValue: true },
@@ -327,7 +317,34 @@ const filterUnchanged = createNode(
     },
     options: {},
   },
-  { position: [1728, -528], typeVersion: 2.2 },
+  { position: [1728, -624], typeVersion: 2.2 },
+);
+
+// 8b. Filter: Tags Changed — only call Record Tags when tags actually differ
+const filterTagsChanged = createNode(
+  'Filter Tags Changed',
+  'n8n-nodes-base.filter',
+  {
+    conditions: {
+      options: {
+        caseSensitive: true,
+        leftValue: '',
+        typeValidation: 'strict',
+        version: 2,
+      },
+      conditions: [
+        {
+          id: crypto.randomUUID(),
+          leftValue: "={{ $json.tags.map(x => x.name).sort().join('|') }}",
+          rightValue: "={{ $('Enforce Required Format').item.json.Tags.sort().join('|') }}",
+          operator: { type: 'string', operation: 'notEquals' },
+        },
+      ],
+      combinator: 'and',
+    },
+    options: {},
+  },
+  { position: [1728, -432], typeVersion: 2.2 },
 );
 
 // 9. Remove Cleaned Entries — skip if Mailchimp status is "cleaned"
@@ -457,6 +474,7 @@ const updateSubs = createNode(
 updateSubs.retryOnFail = true;
 
 // 12. Build Tags Field — diff old and new tags
+// Now fed directly from Filter Tags Changed (not from Update Subscribers)
 const buildTags = createNode(
   'Build Tags Field',
   'n8n-nodes-base.code',
@@ -480,7 +498,7 @@ oldTags.forEach(obj => {
 $input.item.json.updatedTags = updatedTags;
 return $input.item;`,
   },
-  { position: [2624, -528], typeVersion: 2 },
+  { position: [1952, -432], typeVersion: 2 },
 );
 
 // 13. Record Tags — POST tag updates to Mailchimp API
@@ -504,12 +522,13 @@ const recordTags = createNode(
       },
     },
   },
-  { position: [2848, -528], typeVersion: 4.3, credentials: MAILCHIMP_CREDENTIAL },
+  { position: [2176, -432], typeVersion: 4.3, credentials: MAILCHIMP_CREDENTIAL },
 );
 recordTags.retryOnFail = true;
 recordTags.waitBetweenTries = 2000;
 
 // 14. If paper downloaded — check DOWNLOAD field is not empty
+//     Now branches directly from Switch (independent of merge field updates)
 const ifPaperDownloaded = createNode(
   'If paper downloaded',
   'n8n-nodes-base.filter',
@@ -524,7 +543,7 @@ const ifPaperDownloaded = createNode(
       conditions: [
         {
           id: crypto.randomUUID(),
-          leftValue: "={{ $('Build Update Record').item.json.DOWNLOAD }}",
+          leftValue: "={{ $('Enforce Required Format').item.json.DOWNLOAD }}",
           rightValue: '',
           operator: { type: 'string', operation: 'notEmpty', singleValue: true },
         },
@@ -533,16 +552,18 @@ const ifPaperDownloaded = createNode(
     },
     options: {},
   },
-  { position: [3072, -528], typeVersion: 2.2 },
+  { position: [1728, -240], typeVersion: 2.2 },
 );
 
 // 15. Record download event — POST paper_downloaded_website event to Mailchimp
+//     Now references _links from the NOTIONID Guard output (which has the
+//     Mailchimp lookup result), since this path is independent of Update Subscribers
 const recordDownload = createNode(
   'Record download event',
   'n8n-nodes-base.httpRequest',
   {
     method: 'POST',
-    url: "={{ $('Update Subscribers').item.json._links.find(link => link.rel == \"events\").href }}",
+    url: "={{ $('NOTIONID Guard').item.json._links.find(link => link.rel == \"events\").href }}",
     authentication: 'predefinedCredentialType',
     nodeCredentialType: 'mailchimpOAuth2Api',
     sendBody: true,
@@ -558,7 +579,7 @@ const recordDownload = createNode(
     options: {},
   },
   {
-    position: [3296, -528],
+    position: [1952, -240],
     typeVersion: 4.2,
     credentials: {
       ...MAILCHIMP_CREDENTIAL,
@@ -806,9 +827,12 @@ export default createWorkflow('Create or Update Mailchimp Record', {
   nodes: [
     trigger, enforceFormat, findExisting, enforceEmailLower,
     notionIdGuard, guardFilter, switchNode,
-    // Update branch
-    filterUnchanged, removeCleaned, buildUpdate, updateSubs,
-    buildTags, recordTags, ifPaperDownloaded, recordDownload,
+    // Update branch — merge fields path
+    filterMergeFields, removeCleaned, buildUpdate, updateSubs,
+    // Update branch — tags path
+    filterTagsChanged, buildTags, recordTags,
+    // Update branch — download path
+    ifPaperDownloaded, recordDownload,
     // Update write-back
     claimFilterUpdate, buildWritebackUpdate, writeUrlUpdate,
     // Create branch
@@ -824,22 +848,25 @@ export default createWorkflow('Create or Update Mailchimp Record', {
     connect(enforceEmailLower, notionIdGuard),
     connect(notionIdGuard, guardFilter),
     connect(guardFilter, switchNode),
-    // Switch output 0 (Update) → update branch
-    connect(switchNode, filterUnchanged, 0),
+    // Switch output 0 (Update) → three independent paths
+    connect(switchNode, filterMergeFields, 0),
+    connect(switchNode, filterTagsChanged, 0),
+    connect(switchNode, ifPaperDownloaded, 0),
     // Switch output 1 (Create) → create branch
     connect(switchNode, insertNew, 1),
-    // Update branch
-    connect(filterUnchanged, removeCleaned),
+    // Merge fields path: filter → remove cleaned → build → update
+    connect(filterMergeFields, removeCleaned),
     connect(removeCleaned, buildUpdate),
     connect(buildUpdate, updateSubs),
-    connect(updateSubs, buildTags),
-    connect(buildTags, recordTags),
-    connect(recordTags, ifPaperDownloaded),
-    connect(ifPaperDownloaded, recordDownload),
-    // Update write-back (parallel fork from Update Subscribers)
+    // Write-back fork from Update Subscribers
     connect(updateSubs, claimFilterUpdate),
     connect(claimFilterUpdate, buildWritebackUpdate),
     connect(buildWritebackUpdate, writeUrlUpdate),
+    // Tags path: filter → build tags → record tags
+    connect(filterTagsChanged, buildTags),
+    connect(buildTags, recordTags),
+    // Download path: filter → record event
+    connect(ifPaperDownloaded, recordDownload),
     // Create branch
     connect(insertNew, filter2),
     connect(filter2, recordDownload1),

@@ -1,31 +1,30 @@
 /**
  * Mailchimp Audience Webhook
  *
- * Webhook endpoint that receives Mailchimp audience events (subscribe,
- * unsubscribe, profile update, cleaned, email changed), maps them to
- * the standard contact format, and upserts into the Notion master
- * contacts database via the Notion Master Contact Upsert sub-workflow.
+ * Front-end webhook that receives Mailchimp audience events, debounces
+ * them via Redis, and publishes to QStash with a 10-second delay. The
+ * actual processing happens in mailchimp-audience-processor.js when
+ * QStash delivers the callback.
+ *
+ * This prevents duplicate processing when multiple Mailchimp API calls
+ * (e.g., merge field update + tag update) fire near-simultaneous webhooks
+ * for the same subscriber.
  *
  * Flow:
  *   1. GET Webhook responds 200 for Mailchimp's URL validation
  *   2. POST Webhook receives form-encoded event data
- *   3. Code node validates shared secret from query parameter
- *   4. Filter drops requests with invalid secrets
- *   5. Code node maps event payload to contact object(s)
- *   6. Filter drops items with no email
- *   7. Execute Workflow calls Notion Master Contact Upsert
- *   8. Respond 200 to Mailchimp after successful upsert
+ *   3. Maintenance check via Redis
+ *   4. Validate shared secret from query parameter
+ *   5. Extract email + event type for debounce key
+ *   6. Redis SET NX EX 10 — first event passes, duplicates dropped
+ *   7. Publish to QStash with 10s delay → mailchimp-audience-processor
+ *   8. Respond 200 to Mailchimp immediately
  *
  * Event types handled:
- *   - subscribe: new subscriber → upsert with "Subscribed"
- *   - unsubscribe: removed subscriber → upsert with "Unsubscribed"
- *   - profile: profile updated → upsert with "Subscribed"
- *   - cleaned: hard bounce → upsert with "Cleaned" (email only)
- *   - upemail: email changed → create new email + mark old "Unsubscribed"
+ *   - subscribe, unsubscribe, profile, cleaned, upemail
  *
  * Mailchimp sends form-encoded POST (application/x-www-form-urlencoded)
- * with bracket notation (data[merges][FNAME]=John). n8n's Express body
- * parser auto-parses this into nested objects.
+ * with bracket notation (data[merges][FNAME]=John).
  *
  * Mailchimp webhook setup:
  *   URL: https://n8n.vennfactory.com/webhook/<path>?secret=<secret>
@@ -38,23 +37,13 @@ import { createWorkflow, createNode, connect } from '../lib/workflow.js';
 // Configuration
 // ---------------------------------------------------------------------------
 
-// The Notion Master Contact Upsert sub-workflow on the server.
-const UPSERT_WORKFLOW_ID = 'EnwxsZaLNrYqKBDa';
-
 // Shared secret for webhook validation, passed as ?secret= query parameter.
-// Stored in .env (gitignored) — baked into the JSON at build time.
 const MAILCHIMP_WEBHOOK_SECRET = process.env.MAILCHIMP_WEBHOOK_SECRET;
 if (!MAILCHIMP_WEBHOOK_SECRET) {
   throw new Error('Missing MAILCHIMP_WEBHOOK_SECRET in .env');
 }
 
-// Mailchimp data center — used to build the admin profile URL.
-const MAILCHIMP_DC = process.env.MAILCHIMP_DC;
-if (!MAILCHIMP_DC) {
-  throw new Error('Missing MAILCHIMP_DC in .env');
-}
-
-// Upstash Redis for maintenance mode gate.
+// Upstash Redis for maintenance mode gate + debounce.
 function stripQuotes(s) {
   if (s && s.startsWith('"') && s.endsWith('"')) return s.slice(1, -1);
   return s;
@@ -64,6 +53,16 @@ const UPSTASH_TOKEN = stripQuotes(process.env.UPSTASH_REDIS_REST_TOKEN);
 if (!UPSTASH_URL || !UPSTASH_TOKEN) {
   throw new Error('Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN in .env');
 }
+
+// QStash for delayed delivery to the processor workflow.
+const QSTASH_URL = stripQuotes(process.env.QSTASH_URL);
+const QSTASH_TOKEN = stripQuotes(process.env.QSTASH_TOKEN);
+if (!QSTASH_URL || !QSTASH_TOKEN) {
+  throw new Error('Missing QSTASH_URL or QSTASH_TOKEN in .env');
+}
+
+// The processor webhook that QStash will call after the delay.
+const PROCESSOR_WEBHOOK_URL = 'https://n8n.vennfactory.com/webhook/mailchimp-audience-processor';
 
 // Webhook path — shared by both GET and POST nodes.
 const WEBHOOK_PATH = '6a90994c-ebb0-4fb0-be82-010bd6b82745';
@@ -89,9 +88,7 @@ const webhookGet = createNode(
 webhookGet.webhookId = crypto.randomUUID();
 
 // Main webhook: receives form-encoded POST events from Mailchimp.
-// Uses responseMode: 'responseNode' so we only return 200 after a
-// successful upsert. If the upsert fails, n8n returns 500 and
-// Mailchimp will retry.
+// Responds 200 immediately after publishing to QStash (or dropping duplicate).
 const webhook = createNode(
   'Mailchimp Webhook (POST)',
   'n8n-nodes-base.webhook',
@@ -106,8 +103,6 @@ const webhook = createNode(
 webhook.webhookId = WEBHOOK_PATH;
 
 // Maintenance mode gate: HTTP Request to Redis, then IF to branch.
-// The HTTP Request replaces $json with the Redis response, so downstream
-// nodes use $('Mailchimp Webhook (POST)').item.json to get original data.
 const maintenanceCheck = createNode(
   'Maintenance Check',
   'n8n-nodes-base.httpRequest',
@@ -120,7 +115,7 @@ const maintenanceCheck = createNode(
     },
     options: {},
   },
-  { position: [150, 0], typeVersion: 4.2 },
+  { position: [200, 0], typeVersion: 4.2 },
 );
 
 const ifMaintenance = createNode(
@@ -139,7 +134,7 @@ const ifMaintenance = createNode(
     },
     options: {},
   },
-  { position: [350, 0], typeVersion: 2 },
+  { position: [400, 0], typeVersion: 2 },
 );
 
 // When in maintenance mode, respond 200 immediately.
@@ -150,11 +145,10 @@ const respondMaintenance = createNode(
     respondWith: 'noData',
     options: { responseCode: 200 },
   },
-  { position: [450, -150], typeVersion: 1.5 },
+  { position: [600, -200], typeVersion: 1.5 },
 );
 
-// Restore original webhook payload after the HTTP Request replaced $json.
-// Uses back-reference to the webhook node to get the original data.
+// Restore original webhook payload after the maintenance HTTP Request replaced $json.
 const restoreEvent = createNode(
   'Restore Event',
   'n8n-nodes-base.code',
@@ -164,7 +158,7 @@ const restoreEvent = createNode(
 const orig = $('Mailchimp Webhook (POST)').item.json;
 return { json: orig };`,
   },
-  { position: [500, 0], typeVersion: 2 },
+  { position: [600, 0], typeVersion: 2 },
 );
 
 // Validate the shared secret from the query string (?secret=...).
@@ -181,7 +175,7 @@ $input.item.json.validSecret = (receivedSecret === expectedSecret);
 
 return $input.item;`,
   },
-  { position: [700, 0], typeVersion: 2 },
+  { position: [800, 0], typeVersion: 2 },
 );
 
 // Gate: drop requests with invalid or missing secrets.
@@ -212,172 +206,160 @@ const filterValidSecret = createNode(
     },
     options: {},
   },
-  { position: [750, 0], typeVersion: 2.2 },
+  { position: [1000, 0], typeVersion: 2.2 },
 );
 
-// Map the Mailchimp event payload into the contact shape expected by the
-// upsert sub-workflow. Handles all 5 event types. For upemail, outputs
-// two items: one for the new email (Subscribed) and one for the old
-// email (Unsubscribed). Uses runOnceForAllItems so we can return
-// multiple items from a single input.
-const mapToContact = createNode(
-  'Map Event to Contact',
+// ---------------------------------------------------------------------------
+// Debounce gate — Redis SET NX EX 10
+// ---------------------------------------------------------------------------
+
+// Extract email from the webhook body for the debounce key.
+// Mailchimp uses flat bracket-notation keys: data[email], data[new_email], etc.
+const buildDebounceKey = createNode(
+  'Build Debounce Key',
   'n8n-nodes-base.code',
   {
-    mode: 'runOnceForAllItems',
+    mode: 'runOnceForEachItem',
     jsCode: `\
-// n8n does NOT parse form-encoded bracket notation into nested objects.
-// The body has flat keys like "data[email]", "data[merges][FNAME]", etc.
-// Helper to read a flat bracket-notation key from the body.
-function get(body, key) {
-  return body[key] || "";
+const body = $json.body || {};
+const eventType = body.type || "";
+
+// Extract the email that identifies this subscriber
+let email = body["data[email]"] || "";
+if (eventType === "upemail") {
+  // For email changes, debounce on the new email
+  email = body["data[new_email]"] || email;
+}
+email = email.toLowerCase().trim();
+
+if (!email) {
+  // No email — can't debounce, let it through
+  $input.item.json._debounceKey = "";
+  return $input.item;
 }
 
-// Build Mailchimp admin profile URL from web_id (when available).
-const MC_DC = "${MAILCHIMP_DC}";
-function mcProfileUrl(body) {
-  const webId = get(body, "data[web_id]");
-  if (!webId) return null;
-  return "https://" + MC_DC + ".admin.mailchimp.com/lists/members/view?id=" + webId;
-}
-
-const items = $input.all();
-const results = [];
-
-for (const item of items) {
-  const body = item.json.body || {};
-  const eventType = body.type;
-
-  // Parse INTERESTS (comma-separated string) into tags array
-  const interestsRaw = get(body, "data[merges][INTERESTS]");
-  const interests = interestsRaw
-    ? interestsRaw.split(",").map(s => s.trim()).filter(Boolean)
-    : [];
-  const baseTags = [...interests];
-
-  if (eventType === "upemail") {
-    // Email changed: create new contact + mark old as unsubscribed.
-    // upemail payloads have NO merge fields and no web_id.
-    results.push({
-      json: {
-        email: get(body, "data[new_email]"),
-        email_marketing: "Subscribed",
-        tags: [],
-      },
-    });
-    results.push({
-      json: {
-        email: get(body, "data[old_email]"),
-        email_marketing: "Unsubscribed",
-        tags: [],
-      },
-    });
-  } else if (eventType === "cleaned") {
-    // Cleaned: email bounced or abuse complaint.
-    // Minimal payload — only rely on data[email].
-    results.push({
-      json: {
-        email: get(body, "data[email]"),
-        email_marketing: "Cleaned",
-        tags: [],
-        mailchimp_profile: mcProfileUrl(body),
-      },
-    });
-  } else {
-    // subscribe, unsubscribe, profile — all include merge fields + web_id.
-    const statusMap = {
-      subscribe: "Subscribed",
-      unsubscribe: "Unsubscribed",
-      profile: "Subscribed",
-    };
-
-    results.push({
-      json: {
-        email: get(body, "data[email]"),
-        first_name: get(body, "data[merges][FNAME]") || null,
-        last_name: get(body, "data[merges][LNAME]") || null,
-        company: get(body, "data[merges][COMPANY]") || null,
-        phone: get(body, "data[merges][PHONE]") || null,
-        street_address: get(body, "data[merges][ADDRESS][addr1]") || null,
-        street_address_2: get(body, "data[merges][ADDRESS][addr2]") || null,
-        city: get(body, "data[merges][ADDRESS][city]") || null,
-        state: get(body, "data[merges][ADDRESS][state]") || null,
-        postal_code: get(body, "data[merges][ADDRESS][zip]") || null,
-        country: get(body, "data[merges][ADDRESS][country]") || null,
-        email_marketing: statusMap[eventType] || "Subscribed",
-        tags: baseTags,
-        mailchimp_profile: mcProfileUrl(body),
-      },
-    });
-  }
-}
-
-return results;`,
-  },
-  { position: [950, 0], typeVersion: 2 },
+// Build Redis SET NX EX command for Upstash REST API
+$input.item.json._debounceKey = email;
+$input.item.json._debounceBody = JSON.stringify(
+  ["SET", "debounce:mailchimp:" + email, "1", "EX", "10", "NX"]
 );
 
-// Drop records with no email — avoids an unnecessary sub-workflow call.
-const hasEmail = createNode(
-  'Has Email?',
-  'n8n-nodes-base.filter',
+return $input.item;`,
+  },
+  { position: [1200, 0], typeVersion: 2 },
+);
+
+// Redis debounce check — SET NX EX 10
+// Returns {"result": "OK"} for first event, {"result": null} for duplicate
+const redisDebounce = createNode(
+  'Redis Debounce Check',
+  'n8n-nodes-base.httpRequest',
+  {
+    method: 'POST',
+    url: UPSTASH_URL,
+    sendHeaders: true,
+    headerParameters: {
+      parameters: [
+        { name: 'Authorization', value: `Bearer ${UPSTASH_TOKEN}` },
+      ],
+    },
+    sendBody: true,
+    specifyBody: 'json',
+    jsonBody: '={{ $json._debounceBody }}',
+    options: {},
+  },
+  { position: [1400, 0], typeVersion: 4.2 },
+);
+
+// Gate: Is this the first event in the debounce window?
+const isNewEvent = createNode(
+  'Is New Event?',
+  'n8n-nodes-base.if',
   {
     conditions: {
-      options: {
-        caseSensitive: true,
-        leftValue: '',
-        typeValidation: 'strict',
-        version: 2,
-      },
-      conditions: [
-        {
-          id: crypto.randomUUID(),
-          leftValue: '={{ $json.email }}',
-          rightValue: '',
-          operator: {
-            type: 'string',
-            operation: 'notEmpty',
-            singleValue: true,
-          },
-        },
-      ],
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
+      conditions: [{
+        id: crypto.randomUUID(),
+        leftValue: '={{ $json.result }}',
+        rightValue: 'OK',
+        operator: { type: 'string', operation: 'equals' },
+      }],
       combinator: 'and',
     },
     options: {},
   },
-  { position: [1150, 0], typeVersion: 2.2 },
+  { position: [1600, 0], typeVersion: 2 },
 );
 
-// Call the Notion Master Contact Upsert sub-workflow.
-// Runs once per item — for upemail events this means two calls
-// (new email create + old email unsubscribe).
-const upsertContact = createNode(
-  'Upsert Contact',
-  'n8n-nodes-base.executeWorkflow',
+// Respond 200 for duplicates — Mailchimp is happy, no processing needed.
+const respondDuplicate = createNode(
+  'Respond OK (Duplicate)',
+  'n8n-nodes-base.respondToWebhook',
   {
-    workflowId: {
-      __rl: true,
-      value: UPSERT_WORKFLOW_ID,
-      mode: 'id',
+    respondWith: 'noData',
+    options: { responseCode: 200 },
+  },
+  { position: [1800, 200], typeVersion: 1.5 },
+);
+
+// ---------------------------------------------------------------------------
+// QStash publish — delayed delivery to processor
+// ---------------------------------------------------------------------------
+
+// Restore original event payload (Redis response replaced $json)
+const restoreForPublish = createNode(
+  'Restore for Publish',
+  'n8n-nodes-base.code',
+  {
+    mode: 'runOnceForEachItem',
+    jsCode: `\
+const orig = $('Build Debounce Key').item.json;
+const { _debounceBody, _debounceKey, validSecret, ...event } = orig;
+return {
+  json: {
+    email: _debounceKey,
+    event_type: (event.body || {}).type || "",
+    original_body: event.body || {},
+  }
+};`,
+  },
+  { position: [1800, 0], typeVersion: 2 },
+);
+
+// Publish to QStash with 10-second delay.
+// QStash will POST to the processor webhook after the delay.
+const publishToQStash = createNode(
+  'Publish to QStash',
+  'n8n-nodes-base.httpRequest',
+  {
+    method: 'POST',
+    url: `${QSTASH_URL}/v2/publish/${PROCESSOR_WEBHOOK_URL}`,
+    sendHeaders: true,
+    headerParameters: {
+      parameters: [
+        { name: 'Authorization', value: `Bearer ${QSTASH_TOKEN}` },
+        { name: 'Content-Type', value: 'application/json' },
+        { name: 'Upstash-Delay', value: '10s' },
+      ],
     },
+    sendBody: true,
+    specifyBody: 'json',
+    jsonBody: '={{ JSON.stringify($json) }}',
     options: {},
   },
-  { position: [1350, 0], typeVersion: 1.2 },
+  { position: [2000, 0], typeVersion: 4.2 },
 );
+publishToQStash.retryOnFail = true;
 
-// Respond 200 to Mailchimp only after the upsert succeeds.
-// If the upsert fails, n8n returns 500 and Mailchimp will retry
-// (up to 20 times over ~5-8 hours before disabling the webhook).
+// Respond 200 to Mailchimp after successfully publishing to QStash.
 const respondOk = createNode(
   'Respond OK',
   'n8n-nodes-base.respondToWebhook',
   {
     respondWith: 'noData',
-    options: {
-      responseCode: 200,
-    },
+    options: { responseCode: 200 },
   },
-  { position: [1550, 0], typeVersion: 1.5 },
+  { position: [2200, 0], typeVersion: 1.5 },
 );
 
 // ---------------------------------------------------------------------------
@@ -389,7 +371,8 @@ export default createWorkflow('Mailchimp Audience Hook', {
     webhookGet, webhook,
     maintenanceCheck, ifMaintenance, respondMaintenance, restoreEvent,
     validateSecret, filterValidSecret,
-    mapToContact, hasEmail, upsertContact, respondOk,
+    buildDebounceKey, redisDebounce, isNewEvent, respondDuplicate,
+    restoreForPublish, publishToQStash, respondOk,
   ],
   connections: [
     // Maintenance gate
@@ -399,12 +382,19 @@ export default createWorkflow('Mailchimp Audience Hook', {
     connect(ifMaintenance, restoreEvent, 1, 0),          // false (normal) → restore original payload
     connect(restoreEvent, validateSecret),
 
-    // Normal processing
+    // Secret validation
     connect(validateSecret, filterValidSecret),
-    connect(filterValidSecret, mapToContact),
-    connect(mapToContact, hasEmail),
-    connect(hasEmail, upsertContact),
-    connect(upsertContact, respondOk),
+
+    // Debounce gate
+    connect(filterValidSecret, buildDebounceKey),
+    connect(buildDebounceKey, redisDebounce),
+    connect(redisDebounce, isNewEvent),
+    connect(isNewEvent, restoreForPublish, 0, 0),        // true (new) → publish to QStash
+    connect(isNewEvent, respondDuplicate, 1, 0),         // false (duplicate) → respond 200
+
+    // QStash publish + respond
+    connect(restoreForPublish, publishToQStash),
+    connect(publishToQStash, respondOk),
   ],
   settings: {
     errorWorkflow: 'EZTb8m4htw60nP0b',
