@@ -50,6 +50,7 @@ These server workflows have a corresponding `.js` file in `workflows/`.
 | create-thinkific-store.json | Create Thinkific Store | create-thinkific-store.js | |
 | error-handler.json | Error Handler | error-handler.js | |
 | forecast-engine.json | Forecast Engine | forecast-engine.js | |
+| handle-unsubs.json | Handle Unsubs | handle-unsubs.js | |
 
 ## Managed by Patch Scripts
 
@@ -67,7 +68,6 @@ These server-only workflows need local `.js` implementations.
 
 | Server File | Workflow Name |
 |---|---|
-| handle-unsubs.json | Handle Unsubs |
 | lead-created.json | Lead Created |
 | list-orders.json | List Orders |
 | mdi-subscriber-bulk-upload.json | MDI Subscriber Bulk Upload |
@@ -109,9 +109,9 @@ These workflows are deprecated or no longer needed. Can be deactivated and remov
 
 ## Summary
 
-- **Implemented locally**: 34 unique workflows (36 server files, due to duplicates)
+- **Implemented locally**: 35 unique workflows (36 server files, due to duplicates)
 - **Managed by patch scripts**: 1 workflow (3 server snapshots)
-- **To implement**: 16 workflows
+- **To implement**: 15 workflows
 - **To archive**: 16 workflows
 - **Local-only**: 1 file (`_example-http-poll.js` — example template)
 - **Filename mismatches**: 4 (adapter-endorsements, find-orphaned-mailchimp-members, topic-engine, upsert-contact)
