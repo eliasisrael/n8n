@@ -131,6 +131,7 @@ const respond401 = createNode(
 );
 
 // 4. Route by event type — some events can fetch fresh data, others can't
+//    Output 0: upemail, Output 1: cleaned, Output 2: fetchable (everything else)
 const routeByType = createNode(
   'Route by Event Type',
   'n8n-nodes-base.switch',
@@ -165,10 +166,23 @@ const routeByType = createNode(
           renameOutput: true,
           outputKey: 'cleaned',
         },
+        {
+          conditions: {
+            options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
+            conditions: [{
+              id: crypto.randomUUID(),
+              leftValue: '={{ $json.body.event_type }}',
+              rightValue: '',
+              operator: { type: 'string', operation: 'notEmpty', singleValue: true },
+            }],
+            combinator: 'and',
+          },
+          renameOutput: true,
+          outputKey: 'Fetchable',
+        },
       ],
-      fallbackOutput: 'extra',
     },
-    options: { allMatchingOutputs: false },
+    options: {},
   },
   { position: [500, 0], typeVersion: 3.2 },
 );
