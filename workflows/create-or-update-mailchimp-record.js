@@ -115,7 +115,40 @@ const findExisting = createNode(
   { position: [608, -336], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
 );
 findExisting.retryOnFail = true;
+findExisting.maxTries = 3;
+findExisting.waitBetweenTries = 2000;
 findExisting.onError = 'continueRegularOutput';
+
+// 3b. Validate Lookup — distinguish "not found" (no id) from API errors
+//     A successful lookup has an `id` field. A 404 also passes through with
+//     no `id` but no `error` either. An API failure has `error` as a string.
+const validateLookup = createNode(
+  'Validate Lookup',
+  'n8n-nodes-base.code',
+  {
+    mode: 'runOnceForEachItem',
+    jsCode: `\
+const j = $input.item.json;
+
+// Successful lookup — Mailchimp member found
+if (j.id) return $input.item;
+
+// Error response from Mailchimp — distinguish "not found" from real errors
+if (typeof j.error === 'string' && j.error.length > 0) {
+  const msg = j.error.toLowerCase();
+  // 404: "The resource you are requesting could not be found"
+  if (msg.includes('could not be found') || msg.includes('not found')) {
+    return $input.item; // subscriber doesn't exist — pass through to Create
+  }
+  // Any other error (service unavailable, rate limit, etc.) — stop execution
+  throw new Error('Mailchimp API error: ' + j.error);
+}
+
+// No id and no error — pass through to Create branch
+return $input.item;`,
+  },
+  { position: [720, -336], typeVersion: 2 },
+);
 
 // 4. Enforce Email Lowercase — normalize the lookup result email
 const enforceEmailLower = createNode(
@@ -135,7 +168,7 @@ const enforceEmailLower = createNode(
     includeOtherFields: true,
     options: {},
   },
-  { position: [832, -336], typeVersion: 3.4 },
+  { position: [944, -336], typeVersion: 3.4 },
 );
 
 // 5. NOTIONID Guard — Code node that compares incoming page ID with Mailchimp NOTIONID
@@ -464,6 +497,8 @@ const updateSubs = createNode(
   { position: [2400, -720], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
 );
 updateSubs.retryOnFail = true;
+updateSubs.maxTries = 3;
+updateSubs.waitBetweenTries = 2000;
 
 // 12. Build Tags Field — diff old and new tags
 // Now fed directly from Filter Tags Changed (not from Update Subscribers)
@@ -548,6 +583,8 @@ const insertNew = createNode(
   { position: [1728, -240], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
 );
 insertNew.retryOnFail = true;
+insertNew.maxTries = 3;
+insertNew.waitBetweenTries = 2000;
 
 // ---------------------------------------------------------------------------
 // Notion write-back: store Mailchimp profile URL on the Notion contact
@@ -634,11 +671,15 @@ const writeUrlUpdate = createNode(
     sendBody: true,
     specifyBody: 'json',
     jsonBody: '={{ JSON.stringify({ properties: { "Mailchimp Profile": { url: $json.mailchimp_url } } }) }}',
-    options: {},
+    options: {
+      batching: { batch: { batchSize: 1, batchInterval: 334 } },
+    },
   },
   { position: [3072, -720], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
 );
 writeUrlUpdate.retryOnFail = true;
+writeUrlUpdate.maxTries = 3;
+writeUrlUpdate.waitBetweenTries = 1000;
 
 // -- Create write-back path (fork from Insert New Subs) --
 
@@ -691,11 +732,15 @@ const writeUrlCreate = createNode(
     sendBody: true,
     specifyBody: 'json',
     jsonBody: '={{ JSON.stringify({ properties: { "Mailchimp Profile": { url: $json.mailchimp_url } } }) }}',
-    options: {},
+    options: {
+      batching: { batch: { batchSize: 1, batchInterval: 334 } },
+    },
   },
   { position: [2400, -144], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
 );
 writeUrlCreate.retryOnFail = true;
+writeUrlCreate.maxTries = 3;
+writeUrlCreate.waitBetweenTries = 1000;
 
 // ---------------------------------------------------------------------------
 // Assemble workflow
@@ -703,7 +748,7 @@ writeUrlCreate.retryOnFail = true;
 
 export default createWorkflow('Create or Update Mailchimp Record', {
   nodes: [
-    trigger, enforceFormat, findExisting, enforceEmailLower,
+    trigger, enforceFormat, findExisting, validateLookup, enforceEmailLower,
     notionIdGuard, guardFilter, switchNode,
     // Update branch — merge fields path
     filterMergeFields, removeCleaned, buildUpdate, updateSubs,
@@ -720,7 +765,8 @@ export default createWorkflow('Create or Update Mailchimp Record', {
     // Main chain
     connect(trigger, enforceFormat),
     connect(enforceFormat, findExisting),
-    connect(findExisting, enforceEmailLower),
+    connect(findExisting, validateLookup),
+    connect(validateLookup, enforceEmailLower),
     connect(enforceEmailLower, notionIdGuard),
     connect(notionIdGuard, guardFilter),
     connect(guardFilter, switchNode),

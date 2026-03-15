@@ -166,6 +166,9 @@ const lookup = createNode(
 // lookups return zero results.
 lookup.settings = { alwaysOutputData: true };
 lookup.alwaysOutputData = true;
+lookup.retryOnFail = true;
+lookup.maxTries = 3;
+lookup.waitBetweenTries = 1000;
 
 // ---------------------------------------------------------------------------
 // Mark each stream with a common Identifier key for field-based merging
@@ -297,9 +300,17 @@ function valuesEqual(a, b) {
   if (emptyA && emptyB) return true;
   if (emptyA !== emptyB) return false;
   if (Array.isArray(a) && Array.isArray(b)) {
-    return JSON.stringify(a) === JSON.stringify(b);
+    const setB = new Set(b);
+    return a.length === b.length && a.every(v => setB.has(v));
   }
   return a === b;
+}
+
+// For multi_select: incoming is "no change needed" if it is a subset of existing
+function isSubset(incoming, existing) {
+  if (!Array.isArray(incoming) || !Array.isArray(existing)) return false;
+  const existingSet = new Set(existing);
+  return incoming.every(v => existingSet.has(v));
 }
 
 const fieldMap = ${JSON.stringify(FIELD_MAP, null, 2)};
@@ -317,10 +328,17 @@ for (const item of $input.all()) {
     const newVal = data.incoming[inKey];
     const oldVal = data.notion[mapping.notionKey];
 
-    // For multi_select (e.g. Tags), union the arrays instead of replacing
+    // For multi_select (e.g. Tags): if incoming is a subset of existing,
+    // keep existing as-is (no change). Otherwise union the arrays.
     let mergedVal;
-    if (mapping.apiType === 'multi_select' && Array.isArray(newVal) && Array.isArray(oldVal)) {
-      mergedVal = [...new Set([...oldVal, ...newVal])];
+    if (mapping.apiType === 'multi_select') {
+      if (Array.isArray(newVal) && Array.isArray(oldVal) && isSubset(newVal, oldVal)) {
+        mergedVal = oldVal; // incoming adds nothing new — no change needed
+      } else if (Array.isArray(newVal) && Array.isArray(oldVal)) {
+        mergedVal = [...new Set([...oldVal, ...newVal])];
+      } else {
+        mergedVal = hasValue(newVal) ? newVal : (oldVal ?? null);
+      }
     } else {
       mergedVal = hasValue(newVal) ? newVal : (oldVal ?? null);
     }
@@ -373,10 +391,15 @@ const update = createNode(
     sendBody: true,
     specifyBody: 'json',
     jsonBody: '={{ $json.requestBody }}',
-    options: {},
+    options: {
+      batching: { batch: { batchSize: 1, batchInterval: 334 } },
+    },
   },
   { position: [1750, 200], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
 );
+update.retryOnFail = true;
+update.maxTries = 3;
+update.waitBetweenTries = 1000;
 
 // ---------------------------------------------------------------------------
 // False branch – build Notion API body and create a brand-new contact
@@ -451,10 +474,15 @@ const create = createNode(
     sendBody: true,
     specifyBody: 'json',
     jsonBody: '={{ $json.requestBody }}',
-    options: {},
+    options: {
+      batching: { batch: { batchSize: 1, batchInterval: 334 } },
+    },
   },
   { position: [1750, 400], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
 );
+create.retryOnFail = true;
+create.maxTries = 3;
+create.waitBetweenTries = 1000;
 
 // ---------------------------------------------------------------------------
 // Assemble workflow

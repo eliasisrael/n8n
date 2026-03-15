@@ -1,7 +1,7 @@
 /**
  * Stale Pipeline Alerts → VF Tasks with AI Suggested Next Step
  *
- * Daily workflow that scans the Sales, Partner, and Comms pipeline
+ * MWF workflow that scans the Sales, Partner, and Comms pipeline
  * databases for deals that have had no activity for at least WARN_BUSINESS_DAYS
  * business days. For each qualifying deal without an existing open task, creates
  * a task in VF Tasks with:
@@ -176,11 +176,11 @@ return stale.length > 0 ? stale : [{ json: { _empty: true } }];
 // Nodes
 // ---------------------------------------------------------------------------
 
-// 1. Schedule Trigger — daily at 7 AM
+// 1. Schedule Trigger — Mon, Wed, Fri at 7 AM
 const scheduleTrigger = createNode(
-  'Daily 7 AM',
+  'MWF 7 AM',
   'n8n-nodes-base.scheduleTrigger',
-  { rule: { interval: [{ field: 'days', triggerAtHour: 7 }] } },
+  { rule: { interval: [{ field: 'cronExpression', expression: '0 7 * * 1,3,5' }] } },
   { position: [0, 300], typeVersion: 1.2 },
 );
 
