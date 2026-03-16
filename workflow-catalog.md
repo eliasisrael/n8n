@@ -62,6 +62,7 @@ These server workflows have a corresponding `.js` file in `workflows/`.
 | product-updated.json | Product Updated | product-updated.js | |
 | products-management.json | Products Management | products-management.js | |
 | record-order.json | Record Order | record-order.js | |
+| store-lms-product.json | Store LMS Product | store-lms-product.js | |
 
 ## Managed by Patch Scripts
 
@@ -79,8 +80,6 @@ These server-only workflows need local `.js` implementations.
 
 | Server File | Workflow Name |
 |---|---|
-| refresh-all-products.json | Refresh All Products |
-| store-lms-product.json | Store LMS Product |
 | substack-rss-feed-to-webflow-blog-collection.json | Substack RSS Feed to Webflow Blog Collection |
 | testimonials-management.json | Testimonials Management |
 
@@ -105,14 +104,15 @@ These workflows are deprecated or no longer needed. Can be deactivated and remov
 | my-workflow-3.json | My workflow 3 |
 | my-workflow-4.json | My workflow 4 |
 | contacts-management.json | Contacts Management |
+| refresh-all-products.json | Refresh All Products |
 | watch-for-cloud-gateway-fiber.json | Watch for Cloud Gateway Fiber |
 
 ## Summary
 
-- **Implemented locally**: 46 unique workflows (46 server files, due to duplicates)
+- **Implemented locally**: 47 unique workflows (47 server files, due to duplicates)
 - **Managed by patch scripts**: 1 workflow (3 server snapshots)
-- **To implement**: 4 workflows
-- **To archive**: 16 workflows
+- **To implement**: 2 workflows
+- **To archive**: 17 workflows
 - **Local-only**: 1 file (`_example-http-poll.js` — example template)
 - **Filename mismatches**: 4 (adapter-endorsements, find-orphaned-mailchimp-members, topic-engine, upsert-contact)
 - **Server duplicates**: Notion Master Contact Upsert (2), Mailchimp Audience Processor (2), Notion Webhook Router (3)
