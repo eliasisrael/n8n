@@ -61,6 +61,7 @@ These server workflows have a corresponding `.js` file in `workflows/`.
 | product-deleted.json | Product Deleted | product-deleted.js | |
 | product-updated.json | Product Updated | product-updated.js | |
 | products-management.json | Products Management | products-management.js | |
+| record-order.json | Record Order | record-order.js | |
 
 ## Managed by Patch Scripts
 
@@ -78,7 +79,6 @@ These server-only workflows need local `.js` implementations.
 
 | Server File | Workflow Name |
 |---|---|
-| record-order.json | Record Order |
 | refresh-all-products.json | Refresh All Products |
 | store-lms-product.json | Store LMS Product |
 | substack-rss-feed-to-webflow-blog-collection.json | Substack RSS Feed to Webflow Blog Collection |
@@ -109,9 +109,9 @@ These workflows are deprecated or no longer needed. Can be deactivated and remov
 
 ## Summary
 
-- **Implemented locally**: 45 unique workflows (45 server files, due to duplicates)
+- **Implemented locally**: 46 unique workflows (46 server files, due to duplicates)
 - **Managed by patch scripts**: 1 workflow (3 server snapshots)
-- **To implement**: 5 workflows
+- **To implement**: 4 workflows
 - **To archive**: 16 workflows
 - **Local-only**: 1 file (`_example-http-poll.js` — example template)
 - **Filename mismatches**: 4 (adapter-endorsements, find-orphaned-mailchimp-members, topic-engine, upsert-contact)
