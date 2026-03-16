@@ -94,6 +94,7 @@ These scripts modify the Notion Webhook Router directly on the server (fetch →
 - **`patch-router-maintenance.js`** — Inserts maintenance mode gate between Webhook and Calculate Signature
 - **`patch-router-debounce.js`** — Inserts Redis debounce gate (SET NX EX 10) between Skip Deleted Events and Sort by Timestamp
 - **`patch-router-qstash.js`** — Replaces the debounce gate + Switch fan-out with Redis pipeline + QStash publish
+- **`patch-router-secret.js`** — Updates the Notion webhook verification secret in Calculate Signature from `NOTION_WEBHOOK_SECRET` env var
 
 ```sh
 op run --env-file=.env.tpl -- node patch-router-debounce.js              # apply
@@ -149,6 +150,7 @@ Key secrets in `.env.tpl`:
 - `MAILCHIMP_WEBHOOK_SECRET` — Shared secret for Mailchimp webhook validation
 - `MAILCHIMP_DC` — Mailchimp data center (for admin profile URLs)
 - `ANTHROPIC_API_KEY` — Anthropic API (used by some workflows)
+- `NOTION_WEBHOOK_SECRET` — Notion webhook signature verification (used by patch-router-secret.js)
 - `WEBFLOW_VERIFICATION_KEY` — Webflow webhook verification
 
 ## Shared Libraries
