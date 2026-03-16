@@ -63,6 +63,7 @@ These server workflows have a corresponding `.js` file in `workflows/`.
 | products-management.json | Products Management | products-management.js | |
 | record-order.json | Record Order | record-order.js | |
 | store-lms-product.json | Store LMS Product | store-lms-product.js | |
+| substack-rss-feed-to-webflow-blog-collection.json | Substack RSS Feed to Webflow Blog Collection | substack-rss-feed-to-webflow-blog-collection.js | |
 | testimonials-management.json | Testimonials Management | testimonials-management.js | |
 
 ## Managed by Patch Scripts
@@ -74,14 +75,6 @@ These workflows are maintained directly on the server via `patch-router*.js` scr
 | notion-webhook-router.json | Notion Webhook Router |
 | notion-webhook-router-live.json | Notion Webhook Router |
 | notion-webhook-router-pre-maintenance.json | Notion Webhook Router |
-
-## To Implement
-
-These server-only workflows need local `.js` implementations.
-
-| Server File | Workflow Name |
-|---|---|
-| substack-rss-feed-to-webflow-blog-collection.json | Substack RSS Feed to Webflow Blog Collection |
 
 ## To Archive
 
@@ -109,9 +102,9 @@ These workflows are deprecated or no longer needed. Can be deactivated and remov
 
 ## Summary
 
-- **Implemented locally**: 48 unique workflows (48 server files, due to duplicates)
+- **Implemented locally**: 49 unique workflows (49 server files, due to duplicates)
 - **Managed by patch scripts**: 1 workflow (3 server snapshots)
-- **To implement**: 1 workflow
+- **To implement**: 0 workflows
 - **To archive**: 17 workflows
 - **Local-only**: 1 file (`_example-http-poll.js` — example template)
 - **Filename mismatches**: 4 (adapter-endorsements, find-orphaned-mailchimp-members, topic-engine, upsert-contact)
