@@ -108,11 +108,12 @@ The workflow JSON must include `staticData: null`, `pinData: {}`, `meta: { templ
 - Credential object key must be `httpHeaderAuth`, not `anthropicApi`
 - Reference: `stale-pipeline-alerts.js` lines 84-86, 577-578
 
-### Switch node v3.2: no fallbackOutput or allMatchingOutputs
-- `fallbackOutput: 'extra'` and `options: { allMatchingOutputs: false }` are **not valid** for Switch typeVersion 3.2
-- Using them causes "Could not find property option" error on import/load, resulting in an empty workflow in the UI
-- Instead of a fallback output, add an explicit third rule that catches everything else (e.g., `notEmpty` check on the field)
-- The working pattern: `rules: { values: [...] }` with `options: {}` and no `fallbackOutput`
+### Switch node v3.2: fallbackOutput placement
+- `fallbackOutput` belongs inside `options: { fallbackOutput: 'extra' }`, **not** inside `rules: { ... }`
+- Placing it inside `rules` causes "Could not find property option" error on activation
+- Valid values: `'none'` (no fallback — unmatched items are dropped) or `'extra'` (adds an extra output for unmatched items)
+- `allMatchingOutputs: false` in `options` may also cause issues — omit unless specifically needed
+- The working pattern: `rules: { values: [...] }` with `options: { fallbackOutput: 'extra' }` (or `options: {}` to drop unmatched)
 
 ---
 
