@@ -58,6 +58,12 @@ The workflow JSON must include `staticData: null`, `pinData: {}`, `meta: { templ
 - `n8n-nodes-base.executeWorkflow` with `typeVersion: 1` shows "This workflow is out of date" in the n8n UI
 - Use `typeVersion: 1.2` for the current version
 
+### Execute Workflow node: 0 items breaks downstream Respond to Webhook
+- When a sub-workflow's filter drops all items, the Execute Workflow node outputs 0 items
+- n8n does not execute downstream nodes when a node outputs 0 items — the chain stops
+- In webhook adapters using `responseMode: 'responseNode'`, this means the Respond to Webhook node never fires, and the caller (e.g., QStash) sees a timeout and retries
+- Fix: set `alwaysOutputData: true` on the Execute Workflow node so it always emits at least one item, ensuring the response node executes
+
 ### Execute Sub-workflow Trigger (v1.1) parameter names
 - The input mode selector is **`inputSource`** (not `inputDataMode`)
 - Valid values: `"jsonExample"`, `"workflowInputs"`, `"passthrough"`
@@ -118,6 +124,14 @@ The workflow JSON must include `staticData: null`, `pinData: {}`, `meta: { templ
 ---
 
 ## General Patterns
+
+### Webhook receivers must guarantee a response on every code path
+When a workflow uses `responseMode: 'responseNode'`, every possible execution path **must** terminate at a Respond to Webhook node. If any path can silently end without responding (due to 0-item propagation, filtered-out items, or error branches that don't respond), the caller gets a timeout instead of an HTTP response. For external callers with retry logic (QStash, Mailchimp, etc.), this causes spurious retries.
+
+**Common violations to check when building or reviewing webhook receivers:**
+- A node between the webhook and the response can output 0 items (e.g., Execute Workflow when the sub-workflow filters everything, or a Filter node that drops all items). Fix: `alwaysOutputData: true` on such nodes.
+- An error branch that doesn't have its own Respond node — the workflow errors out and the caller never gets a response. Fix: add Respond nodes on error paths (e.g., Respond 401, Respond 500).
+- `retryOnFail` on Execute Workflow nodes in a webhook receiver — sub-workflow retries can take seconds each, delaying the response and potentially causing the caller to time out. When the caller already has retry logic (e.g., QStash), let it handle retries instead. Node-level retries on other nodes (e.g., HTTP Request for a quick API call) are fine since they complete fast and avoid burning a full caller retry cycle.
 
 ### Use Filter nodes instead of IF nodes for simple validation gates
 When you only need to drop records that fail a check (no logic needed on the failing branch), use a Filter node. An IF node with an empty false branch is wasteful. Note: Filter nodes **silently drop** non-matching items — they don't error. The `onError` setting only fires on expression evaluation failures, not on items that fail the conditions. If you need to raise an error on invalid data, use an IF node with a Stop and Error node on the false branch instead (see below).
