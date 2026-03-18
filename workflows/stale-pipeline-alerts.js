@@ -124,6 +124,15 @@ function addBusinessDays(startISO, days) {
   return d.toISOString().split('T')[0];
 }
 
+// End of current calendar quarter (Mar 31, Jun 30, Sep 30, Dec 31)
+function endOfCurrentQuarter() {
+  const now = new Date();
+  const month = now.getMonth();
+  const year = now.getFullYear();
+  const quarterEndMonth = Math.floor(month / 3) * 3 + 2;
+  return new Date(year, quarterEndMonth + 1, 0);
+}
+
 // Normalize priority to High/Medium/Low
 function normalizePriority(rawPriority, pipelineName) {
   if (pipelineName === 'Sales') {
@@ -147,6 +156,17 @@ for (const item of $input.all()) {
   const priority = normalizePriority(rawPriority, pipeline.name);
   const warnDays = WARN_BUSINESS_DAYS_BY_PRIORITY[priority] || 3;
   const staleDays = STALE_DAYS_BY_PRIORITY[priority] || 7;
+
+  // Sales pipeline: skip deals whose expected close is after the current quarter,
+  // unless the expected close is within the staleDays window (closing soon = always flag)
+  if (pipeline.name === 'Sales') {
+    const expectedClose = j.property_expected_close;
+    if (expectedClose) {
+      const closeDate = new Date(expectedClose);
+      const daysUntilClose = Math.ceil((closeDate - new Date()) / (1000 * 60 * 60 * 24));
+      if (closeDate > endOfCurrentQuarter() && daysUntilClose > staleDays) continue;
+    }
+  }
 
   const daysBusiness = businessDaysSince(edited);
   if (daysBusiness < warnDays) continue;
