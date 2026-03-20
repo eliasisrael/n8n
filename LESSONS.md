@@ -22,6 +22,9 @@ Hard-won knowledge from building and importing n8n workflows. Always check this 
 - Nodes on the same logical step should share the same x coordinate; sequential steps increase x
 - Typical horizontal spacing between sequential nodes: **200–250px**
 - Don't place all nodes on a single y line — use vertical offsets to convey branching and hierarchy
+- **Left-to-right flow**: if node A has an output arc that traces to node B, A must be placed to the left of B (lower x)
+- **Output ordering top-to-bottom**: when a node has multiple outputs, all downstream nodes connected from output 0 must be placed above (lower y) those from output 1, which in turn must be above those from output 2, and so on
+- **Minimize arc crossings**: arrange nodes so that output arcs do not cross whenever possible
 
 ### Layout patterns for webhook routers
 - **Validation spine** (webhook → signature check → filters): keep on a single y level, tight x spacing (~224px)
@@ -31,21 +34,25 @@ Hard-won knowledge from building and importing n8n workflows. Always check this 
 - **Terminal nodes** (Success/Error respond): align at the **same x** coordinate, spread vertically (e.g., y=192 for success, y=816 for error) so they form a clear vertical pair at the right edge of the workflow
 - **Error paths**: position below the main flow line; success paths above
 
+### Parallel branch placement
+- When a node receives input from sources at x=N (e.g., two Build nodes), place it at x=N+224 — the **same x** as sibling nodes that also receive from those sources
+- **Vertically center** a shared downstream node between its sources (e.g., if Update is at y=208 and Create is at y=592, place the shared node at y=400)
+- A parallel observability/monitoring branch should sit at the **vertical midpoint** between the branches it monitors, not below or offset — this visually conveys that it connects to both
+
 ### Hardcode positions in patch scripts
 - When patching a live workflow, **hardcode absolute positions** rather than computing relative offsets. Relative layouts drift across re-runs as anchor nodes move.
 - After manually adjusting layout in the n8n UI, fetch the live positions with the API and copy them into the patch script so re-runs are idempotent.
 
 ### Reference: Notion Webhook Router layout
 ```
-y=192  ·························Success: Respond (1136,192)
-y=304  ·Sticky Note (-544,304)
-y=432  ·························Execution Data (688,432)
-y=528  Webhook→Sig→Trust→Skip→IsDB?→···Restore (464,528)
-y=600  ·························Build→Redis (16–240,600)
-y=624  ·························IsRoutable (688,624)
-y=696  ·························Publish (912,696)
-y=816  ·························Error: Respond (1136,816)
+y=160  ·Sticky Note (128,160)
+y=200  ····························FetchDB→ExecData (688–912,200)     [audit branch]
+y=400  Webhook→Maint?→Restore→Sig→Trust→Skip→IsDB?→Build→Redis→Restore→Routable?→Publish  [spine]
+       (-1104 ··········································· 464 ··· 688 ··· 912 ··· 1360 ··· 1584)
+y=680  ·····························································Success: Respond (1808,680)
+y=880  ·····························································Error: Respond (1808,880)
 ```
+IF output wiring convention: output 0 (true) stays on or above the spine; output 1 (false) drops below.
 
 ---
 
@@ -818,9 +825,9 @@ The Sort node's parameter structure requires a `sortFieldsUi` wrapper around the
 Both the Notion Webhook Router and Mailchimp Audience Hook support a Redis-based maintenance mode that silently drops events while returning 200 to callers:
 
 ```
-Webhook → HTTP Request (GET n8n:maintenance from Upstash) → IF result not empty
-  True  → Respond to Webhook (200, drop event)
-  False → Restore Event (Code: back-ref to Webhook node) → normal processing
+Webhook → HTTP Request (GET n8n:maintenance from Upstash) → IF result empty
+  True  → Restore Event (Code: back-ref to Webhook node) → normal processing
+  False → Respond to Webhook (200, drop event)
 ```
 
 Toggle with: `node maintenance.js on [--ttl 3600]` / `node maintenance.js off` / `node maintenance.js status`
