@@ -212,8 +212,10 @@ The `upsert-contact` sub-workflow implements the standard contact upsert:
 Other workflows that modify contacts should call the upsert sub-workflow rather than writing to Notion directly.
 
 ## Guidelines for Claude
-- **Always check `LESSONS.md`** before designing solutions — it contains hard-won knowledge about n8n parameter formats and import quirks
-- **Always record new lessons** in `LESSONS.md` when a bug is found, a workaround is discovered, or something behaves differently than expected
+- **Always check both lessons files** before designing solutions:
+  - **`GENERAL-LESSONS.md`** — general n8n workflow knowledge (node parameter formats, import quirks, integration patterns). This file is portable across projects.
+  - **`LESSONS.md`** — project-specific knowledge (server credentials, workflow-specific layouts, future work plans)
+- **Always record new lessons** when a bug is found, a workaround is discovered, or something behaves differently than expected. Put general n8n knowledge in `GENERAL-LESSONS.md` and project-specific knowledge in `LESSONS.md`.
 - Always use `lib/workflow.js` helpers to build workflows — never hand-write raw JSON
 - Test builds with `node build.js` after creating or modifying workflows
 - Node type IDs must match n8n 1.x naming (e.g., `n8n-nodes-base.httpRequest`, not legacy names)
