@@ -43,6 +43,12 @@ if (!N8N_BASE_URL) {
 
 const dryRun = process.argv.includes('--dry-run');
 
+// DLQ callback URL — QStash will POST here when a message permanently fails delivery.
+// This URL is added as the Upstash-Failure-Callback header at publish time (in
+// patch-router-qstash.js and mailchimp-audience-hook.js). This script validates
+// the endpoint is reachable.
+const DLQ_CALLBACK_URL = `${N8N_BASE_URL}/webhook/qstash-dlq`;
+
 // ---------------------------------------------------------------------------
 // Topic → Adapter mapping
 // ---------------------------------------------------------------------------
@@ -214,6 +220,38 @@ for (const { topic, databaseId } of TOPICS) {
 }
 
 console.log(`\n  ${redisOk} mapping(s) written, ${redisErr} error(s).`);
+
+// ---------------------------------------------------------------------------
+// 3. Validate DLQ callback endpoint
+// ---------------------------------------------------------------------------
+console.log('\n=== QStash DLQ Callback ===\n');
+console.log(`  URL: ${DLQ_CALLBACK_URL}`);
+
+let dlqOk = false;
+if (!dryRun) {
+  try {
+    // HEAD/GET to verify the webhook endpoint is registered and reachable.
+    // n8n webhooks return 404 for GET if they only accept POST, but that still
+    // confirms n8n is up and the path is routable.
+    const res = await fetch(DLQ_CALLBACK_URL, { method: 'GET' });
+    if (res.status < 500) {
+      console.log(`    OK (status: ${res.status})`);
+      dlqOk = true;
+    } else {
+      console.error(`    WARNING: endpoint returned ${res.status} — is the QStash DLQ Handler workflow active?`);
+    }
+  } catch (err) {
+    console.error(`    WARNING: could not reach endpoint — ${err.message}`);
+  }
+} else {
+  console.log(`    (dry run — skipping validation)`);
+  dlqOk = true;
+}
+
+if (dlqOk) {
+  console.log('\n  Publish nodes should include this header when calling QStash:');
+  console.log(`    Upstash-Failure-Callback: ${DLQ_CALLBACK_URL}`);
+}
 
 // ---------------------------------------------------------------------------
 // Summary

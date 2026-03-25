@@ -35,7 +35,9 @@ function stripQuotes(s) {
 }
 
 const UPSTASH_URL = stripQuotes(env.UPSTASH_REDIS_REST_URL);
-const UPSTASH_TOKEN = stripQuotes(env.UPSTASH_REDIS_REST_TOKEN);
+
+// n8n server credential for Upstash Redis (httpHeaderAuth type).
+const UPSTASH_CREDENTIAL = { httpHeaderAuth: { id: 'mxEZyivdASDcGG7S', name: 'Upstash Redis (Fulcrum)' } };
 
 const dryRun = process.argv.includes('--dry-run');
 
@@ -43,8 +45,8 @@ if (!BASE_URL || !API_KEY) {
   console.error('Missing N8N_BASE_URL or N8N_API_KEY in .env');
   process.exit(1);
 }
-if (!UPSTASH_URL || !UPSTASH_TOKEN) {
-  console.error('Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN in .env');
+if (!UPSTASH_URL) {
+  console.error('Missing UPSTASH_REDIS_REST_URL in .env');
   process.exit(1);
 }
 
@@ -149,12 +151,8 @@ const maintenanceCheckNode = {
   parameters: {
     method: 'GET',
     url: `${UPSTASH_URL}/GET/n8n:maintenance`,
-    sendHeaders: true,
-    headerParameters: {
-      parameters: [
-        { name: 'Authorization', value: `Bearer ${UPSTASH_TOKEN}` },
-      ],
-    },
+    authentication: 'genericCredentialType',
+    genericAuthType: 'httpHeaderAuth',
     options: {},
   },
   type: 'n8n-nodes-base.httpRequest',
@@ -162,6 +160,7 @@ const maintenanceCheckNode = {
   position: maintenanceCheckPos,
   id: crypto.randomUUID(),
   name: 'Maintenance Check',
+  credentials: UPSTASH_CREDENTIAL,
 };
 
 // 5b. If Maintenance? (IF node) — result is non-null when maintenance is active

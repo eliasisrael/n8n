@@ -69,9 +69,11 @@ function stripQuotes(s) {
 }
 
 const UPSTASH_URL = stripQuotes(env.UPSTASH_REDIS_REST_URL);
-const UPSTASH_TOKEN = stripQuotes(env.UPSTASH_REDIS_REST_TOKEN);
-const QSTASH_TOKEN = stripQuotes(env.QSTASH_TOKEN);
 const QSTASH_URL = stripQuotes(env.QSTASH_URL || 'https://qstash.upstash.io');
+
+// n8n server credentials for Upstash Redis and QStash (httpHeaderAuth type).
+const UPSTASH_CREDENTIAL = { httpHeaderAuth: { id: 'mxEZyivdASDcGG7S', name: 'Upstash Redis (Fulcrum)' } };
+const QSTASH_CREDENTIAL = { httpHeaderAuth: { id: '31uVSX3kLzvq1xiT', name: 'QStash (Fulcrum)' } };
 
 const dryRun = process.argv.includes('--dry-run');
 
@@ -79,12 +81,12 @@ if (!BASE_URL || !API_KEY) {
   console.error('Missing N8N_BASE_URL or N8N_API_KEY in .env');
   process.exit(1);
 }
-if (!UPSTASH_URL || !UPSTASH_TOKEN) {
-  console.error('Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN in .env');
+if (!UPSTASH_URL) {
+  console.error('Missing UPSTASH_REDIS_REST_URL in .env');
   process.exit(1);
 }
-if (!QSTASH_TOKEN) {
-  console.error('Missing QSTASH_TOKEN in .env');
+if (!QSTASH_URL) {
+  console.error('Missing QSTASH_URL in .env');
   process.exit(1);
 }
 
@@ -359,12 +361,8 @@ const redisPipelineNode = {
   parameters: {
     method: 'POST',
     url: `${UPSTASH_URL}/pipeline`,
-    sendHeaders: true,
-    headerParameters: {
-      parameters: [
-        { name: 'Authorization', value: `Bearer ${UPSTASH_TOKEN}` },
-      ],
-    },
+    authentication: 'genericCredentialType',
+    genericAuthType: 'httpHeaderAuth',
     sendBody: true,
     specifyBody: 'json',
     jsonBody: '={{ JSON.stringify($json._pipelineBody) }}',
@@ -375,6 +373,7 @@ const redisPipelineNode = {
   position: redisPipelinePos,
   id: crypto.randomUUID(),
   name: 'Redis Pipeline',
+  credentials: UPSTASH_CREDENTIAL,
   retryOnFail: true,
   maxTries: 3,
   waitBetweenTries: 2000,
@@ -461,16 +460,20 @@ const isRoutableNode = {
 // 5e. Publish to QStash (HTTP Request node)
 // retryOnFail: 3 attempts with 2s backoff for transient QStash errors
 // onError: continueErrorOutput routes failures to explicit 503 response
+const DLQ_CALLBACK_URL = `${env.N8N_BASE_URL}/webhook/qstash-dlq`;
+
 const publishNode = {
   parameters: {
     method: 'POST',
     url: `=${QSTASH_URL}/v2/publish/{{ $json._topicName }}`,
+    authentication: 'genericCredentialType',
+    genericAuthType: 'httpHeaderAuth',
     sendHeaders: true,
     headerParameters: {
       parameters: [
-        { name: 'Authorization', value: `Bearer ${QSTASH_TOKEN}` },
         { name: 'Upstash-Delay', value: '10s' },
         { name: 'Content-Type', value: 'application/json' },
+        { name: 'Upstash-Failure-Callback', value: DLQ_CALLBACK_URL },
       ],
     },
     sendBody: true,
@@ -483,6 +486,7 @@ const publishNode = {
   position: publishPos,
   id: crypto.randomUUID(),
   name: 'Publish to QStash',
+  credentials: QSTASH_CREDENTIAL,
   retryOnFail: true,
   maxTries: 3,
   waitBetweenTries: 2000,

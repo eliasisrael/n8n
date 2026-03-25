@@ -9,7 +9,7 @@
  * Flow:
  *   1. Webhook receives POST from Webflow
  *   2. Code node validates HMAC-SHA256 signature
- *   3. Filter drops untrusted payloads
+ *   3. IF node gates on signature — invalid → 401 response + Stop and Error
  *   4. Code node maps Webflow payload → contact fields
  *   5. Execute Workflow calls Notion Master Contact Upsert
  *
@@ -87,35 +87,46 @@ return $input.item;`,
   { position: [208, 0], typeVersion: 2 },
 );
 
-// Gate: drop requests with invalid signatures.
-const filterTrusted = createNode(
-  'Filter Trusted Payload',
-  'n8n-nodes-base.filter',
+// Gate: branch on signature validity — trusted continues, untrusted gets 401 + error.
+const ifTrusted = createNode(
+  'Trusted Payload?',
+  'n8n-nodes-base.if',
   {
     conditions: {
-      options: {
-        caseSensitive: true,
-        leftValue: '',
-        typeValidation: 'strict',
-        version: 2,
-      },
-      conditions: [
-        {
-          id: crypto.randomUUID(),
-          leftValue: '={{ $json.trustedPayload }}',
-          rightValue: '',
-          operator: {
-            type: 'boolean',
-            operation: 'true',
-            singleValue: true,
-          },
-        },
-      ],
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
+      conditions: [{
+        id: crypto.randomUUID(),
+        leftValue: '={{ $json.trustedPayload }}',
+        rightValue: '',
+        operator: { type: 'boolean', operation: 'true', singleValue: true },
+      }],
       combinator: 'and',
     },
     options: {},
   },
-  { position: [416, 0], typeVersion: 2.2 },
+  { position: [416, 0], typeVersion: 2 },
+);
+
+// Respond 401 Unauthorized when signature is invalid.
+const respondUnauthorized = createNode(
+  'Respond 401 (Bad Signature)',
+  'n8n-nodes-base.respondToWebhook',
+  {
+    respondWith: 'noData',
+    options: { responseCode: 401 },
+  },
+  { position: [624, 200], typeVersion: 1.5 },
+);
+
+// Throw error so it gets reported via the Error Handler workflow.
+const stopBadSignature = createNode(
+  'Stop: Bad Signature',
+  'n8n-nodes-base.stopAndError',
+  {
+    errorType: 'errorMessage',
+    errorMessage: '=Webflow webhook HMAC signature verification failed. Received request from {{ $("Webhook").item.json.headers?.host || "unknown" }}',
+  },
+  { position: [832, 200], typeVersion: 1 },
 );
 
 // Map the Webflow payload into the contact shape expected by the upsert
@@ -209,13 +220,18 @@ const respondOk = createNode(
 // ---------------------------------------------------------------------------
 
 export default createWorkflow('MDI Subscriber Hook', {
-  nodes: [webhook, validateSignature, filterTrusted, mapToContact, hasEmail, upsertContact, respondOk],
+  nodes: [webhook, validateSignature, ifTrusted, respondUnauthorized, stopBadSignature, mapToContact, hasEmail, upsertContact, respondOk],
   connections: [
     connect(webhook, validateSignature),
-    connect(validateSignature, filterTrusted),
-    connect(filterTrusted, mapToContact),
+    connect(validateSignature, ifTrusted),
+    connect(ifTrusted, mapToContact, 0, 0),                  // true (trusted) → continue
+    connect(ifTrusted, respondUnauthorized, 1, 0),            // false (untrusted) → respond 401
+    connect(respondUnauthorized, stopBadSignature),            // then throw error for Error Handler
     connect(mapToContact, hasEmail),
     connect(hasEmail, upsertContact),
     connect(upsertContact, respondOk),
   ],
+  settings: {
+    errorWorkflow: 'EZTb8m4htw60nP0b',
+  },
 });

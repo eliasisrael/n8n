@@ -64,7 +64,7 @@ if (
   name === 'upsert-contact' ||
   name === 'mailchimp-audience-hook' ||
   name === 'mailchimp-audience-processor' ||
-  name === 'qstash'
+  name.includes('qstash')
 ) {
   severity = 'critical';
 } else if (

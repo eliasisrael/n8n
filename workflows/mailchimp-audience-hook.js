@@ -14,7 +14,7 @@
  *   1. GET Webhook responds 200 for Mailchimp's URL validation
  *   2. POST Webhook receives form-encoded event data
  *   3. Maintenance check via Redis
- *   4. Validate shared secret from query parameter
+ *   4. Validate shared secret from query parameter — invalid → 401 + Stop and Error
  *   5. Extract email + event type for debounce key
  *   6. Redis SET NX EX 10 — first event passes, duplicates dropped
  *   7. Publish to QStash with 10s delay → mailchimp-audience-processor
@@ -49,17 +49,19 @@ function stripQuotes(s) {
   return s;
 }
 const UPSTASH_URL = stripQuotes(process.env.UPSTASH_REDIS_REST_URL);
-const UPSTASH_TOKEN = stripQuotes(process.env.UPSTASH_REDIS_REST_TOKEN);
-if (!UPSTASH_URL || !UPSTASH_TOKEN) {
-  throw new Error('Missing UPSTASH_REDIS_REST_URL or UPSTASH_REDIS_REST_TOKEN in .env');
+if (!UPSTASH_URL) {
+  throw new Error('Missing UPSTASH_REDIS_REST_URL in .env');
 }
 
 // QStash for delayed delivery to the processor workflow.
 const QSTASH_URL = stripQuotes(process.env.QSTASH_URL);
-const QSTASH_TOKEN = stripQuotes(process.env.QSTASH_TOKEN);
-if (!QSTASH_URL || !QSTASH_TOKEN) {
-  throw new Error('Missing QSTASH_URL or QSTASH_TOKEN in .env');
+if (!QSTASH_URL) {
+  throw new Error('Missing QSTASH_URL in .env');
 }
+
+// n8n server credentials for Upstash Redis and QStash (httpHeaderAuth type).
+const UPSTASH_CREDENTIAL = { httpHeaderAuth: { id: 'mxEZyivdASDcGG7S', name: 'Upstash Redis (Fulcrum)' } };
+const QSTASH_CREDENTIAL = { httpHeaderAuth: { id: '31uVSX3kLzvq1xiT', name: 'QStash (Fulcrum)' } };
 
 // The processor webhook that QStash will call after the delay.
 const PROCESSOR_WEBHOOK_URL = 'https://n8n.vennfactory.com/webhook/mailchimp-audience-processor';
@@ -109,13 +111,11 @@ const maintenanceCheck = createNode(
   {
     method: 'GET',
     url: `${UPSTASH_URL}/GET/n8n:maintenance`,
-    sendHeaders: true,
-    headerParameters: {
-      parameters: [{ name: 'Authorization', value: `Bearer ${UPSTASH_TOKEN}` }],
-    },
+    authentication: 'genericCredentialType',
+    genericAuthType: 'httpHeaderAuth',
     options: {},
   },
-  { position: [200, 0], typeVersion: 4.2 },
+  { position: [200, 0], typeVersion: 4.2, credentials: UPSTASH_CREDENTIAL },
 );
 
 const ifMaintenance = createNode(
@@ -178,35 +178,46 @@ return $input.item;`,
   { position: [800, 0], typeVersion: 2 },
 );
 
-// Gate: drop requests with invalid or missing secrets.
-const filterValidSecret = createNode(
-  'Filter Valid Secret',
-  'n8n-nodes-base.filter',
+// Gate: branch on secret validity — valid continues, invalid gets 401 + error.
+const ifValidSecret = createNode(
+  'Valid Secret?',
+  'n8n-nodes-base.if',
   {
     conditions: {
-      options: {
-        caseSensitive: true,
-        leftValue: '',
-        typeValidation: 'strict',
-        version: 2,
-      },
-      conditions: [
-        {
-          id: crypto.randomUUID(),
-          leftValue: '={{ $json.validSecret }}',
-          rightValue: '',
-          operator: {
-            type: 'boolean',
-            operation: 'true',
-            singleValue: true,
-          },
-        },
-      ],
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
+      conditions: [{
+        id: crypto.randomUUID(),
+        leftValue: '={{ $json.validSecret }}',
+        rightValue: '',
+        operator: { type: 'boolean', operation: 'true', singleValue: true },
+      }],
       combinator: 'and',
     },
     options: {},
   },
-  { position: [1000, 0], typeVersion: 2.2 },
+  { position: [1000, 0], typeVersion: 2 },
+);
+
+// Respond 401 Unauthorized when secret is invalid.
+const respondUnauthorized = createNode(
+  'Respond 401 (Bad Secret)',
+  'n8n-nodes-base.respondToWebhook',
+  {
+    respondWith: 'noData',
+    options: { responseCode: 401 },
+  },
+  { position: [1200, 200], typeVersion: 1.5 },
+);
+
+// Throw error so it gets reported via the Error Handler workflow.
+const stopBadSecret = createNode(
+  'Stop: Bad Secret',
+  'n8n-nodes-base.stopAndError',
+  {
+    errorType: 'errorMessage',
+    errorMessage: '=Mailchimp webhook secret verification failed. Received request from {{ $("Mailchimp Webhook (POST)").item.json.headers?.host || "unknown" }}',
+  },
+  { position: [1400, 200], typeVersion: 1 },
 );
 
 // ---------------------------------------------------------------------------
@@ -257,18 +268,14 @@ const redisDebounce = createNode(
   {
     method: 'POST',
     url: UPSTASH_URL,
-    sendHeaders: true,
-    headerParameters: {
-      parameters: [
-        { name: 'Authorization', value: `Bearer ${UPSTASH_TOKEN}` },
-      ],
-    },
+    authentication: 'genericCredentialType',
+    genericAuthType: 'httpHeaderAuth',
     sendBody: true,
     specifyBody: 'json',
     jsonBody: '={{ $json._debounceBody }}',
     options: {},
   },
-  { position: [1400, 0], typeVersion: 4.2 },
+  { position: [1400, 0], typeVersion: 4.2, credentials: UPSTASH_CREDENTIAL },
 );
 
 // Gate: Is this the first event in the debounce window?
@@ -326,6 +333,9 @@ return {
   { position: [1800, 0], typeVersion: 2 },
 );
 
+// DLQ callback URL — QStash will POST here when a message permanently fails delivery.
+const DLQ_CALLBACK_URL = `https://n8n.vennfactory.com/webhook/qstash-dlq`;
+
 // Publish to QStash with 10-second delay.
 // QStash will POST to the processor webhook after the delay.
 const publishToQStash = createNode(
@@ -334,12 +344,14 @@ const publishToQStash = createNode(
   {
     method: 'POST',
     url: `${QSTASH_URL}/v2/publish/${PROCESSOR_WEBHOOK_URL}`,
+    authentication: 'genericCredentialType',
+    genericAuthType: 'httpHeaderAuth',
     sendHeaders: true,
     headerParameters: {
       parameters: [
-        { name: 'Authorization', value: `Bearer ${QSTASH_TOKEN}` },
         { name: 'Content-Type', value: 'application/json' },
         { name: 'Upstash-Delay', value: '10s' },
+        { name: 'Upstash-Failure-Callback', value: DLQ_CALLBACK_URL },
       ],
     },
     sendBody: true,
@@ -347,7 +359,7 @@ const publishToQStash = createNode(
     jsonBody: '={{ JSON.stringify($json) }}',
     options: {},
   },
-  { position: [2000, 0], typeVersion: 4.2 },
+  { position: [2000, 0], typeVersion: 4.2, credentials: QSTASH_CREDENTIAL },
 );
 publishToQStash.retryOnFail = true;
 
@@ -370,7 +382,7 @@ export default createWorkflow('Mailchimp Audience Hook', {
   nodes: [
     webhookGet, webhook,
     maintenanceCheck, ifMaintenance, respondMaintenance, restoreEvent,
-    validateSecret, filterValidSecret,
+    validateSecret, ifValidSecret, respondUnauthorized, stopBadSecret,
     buildDebounceKey, redisDebounce, isNewEvent, respondDuplicate,
     restoreForPublish, publishToQStash, respondOk,
   ],
@@ -382,11 +394,13 @@ export default createWorkflow('Mailchimp Audience Hook', {
     connect(ifMaintenance, restoreEvent, 1, 0),          // false (normal) → restore original payload
     connect(restoreEvent, validateSecret),
 
-    // Secret validation
-    connect(validateSecret, filterValidSecret),
+    // Secret validation — true (valid) continues, false (invalid) → 401 + error
+    connect(validateSecret, ifValidSecret),
+    connect(ifValidSecret, respondUnauthorized, 1, 0),       // false → respond 401
+    connect(respondUnauthorized, stopBadSecret),              // then throw error for Error Handler
 
     // Debounce gate
-    connect(filterValidSecret, buildDebounceKey),
+    connect(ifValidSecret, buildDebounceKey, 0, 0),          // true (valid) → continue
     connect(buildDebounceKey, redisDebounce),
     connect(redisDebounce, isNewEvent),
     connect(isNewEvent, restoreForPublish, 0, 0),        // true (new) → publish to QStash

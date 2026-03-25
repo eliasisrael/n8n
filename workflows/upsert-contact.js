@@ -36,6 +36,20 @@ import { createWorkflow, createNode, connect } from '../lib/workflow.js';
 const DATABASE_ID = '1688ebaf-15ee-806b-bd12-dd7c8caf2bdd';
 const NOTION_CREDENTIAL = { notionApi: { id: 'lOLrwKiRnGrhZ9xM', name: 'Eve Notion Account' } };
 
+// Upstash Redis for loop detection
+function stripQuotes(s) {
+  if (s && s.startsWith('"') && s.endsWith('"')) return s.slice(1, -1);
+  return s;
+}
+const UPSTASH_URL = stripQuotes(process.env.UPSTASH_REDIS_REST_URL) || '';
+const UPSTASH_CREDENTIAL = { httpHeaderAuth: { id: 'mxEZyivdASDcGG7S', name: 'Upstash Redis (Fulcrum)' } };
+
+// Pushover for loop alerts
+const PUSHOVER_CREDENTIAL = {
+  pushoverApi: { id: '8yRL2WE5w6WO2crY', name: 'Pushover account' },
+};
+const PUSHOVER_USER_KEY = 'u8cx9933n6kq69g1uotjavhxcwri7n';
+
 // Map from incoming field names →
 //   prop:      Notion property name (used when *writing* via propertiesUi)
 //   notionKey: Notion simplified-output field name (used when *reading* getAll results)
@@ -356,6 +370,7 @@ for (const item of $input.all()) {
       json: {
         pageId: data.notion.id,
         requestBody: JSON.stringify({ properties }),
+        _email: data.Identifier,
       },
     });
   }
@@ -440,6 +455,7 @@ for (const item of $input.all()) {
         parent: { database_id: DATABASE_ID },
         properties,
       }),
+      _email: data.Identifier,
     },
   });
 }
@@ -485,6 +501,100 @@ create.maxTries = 3;
 create.waitBetweenTries = 1000;
 
 // ---------------------------------------------------------------------------
+// Loop detection — Redis INCR with fixed 5-minute window
+//
+// Runs in parallel with the actual Notion write (Update / Create). If the
+// same email is upserted 4+ times within a 5-minute window, fires a
+// Pushover alert. Failures on this path never affect the main upsert.
+// ---------------------------------------------------------------------------
+
+const PREPARE_LOOP_CHECK_CODE = `
+const results = [];
+for (const item of $input.all()) {
+  const email = (item.json._email || '').toLowerCase().trim();
+  if (!email) continue;
+
+  const luaScript = "local count = redis.call('INCR', KEYS[1])\\nif count == 1 then\\nredis.call('EXPIRE', KEYS[1], ARGV[1])\\nend\\nreturn count";
+  const redisBody = JSON.stringify(["EVAL", luaScript, "1", "loop:" + email, "300"]);
+
+  results.push({ json: { email, redisBody } });
+}
+return results;
+`.trim();
+
+const prepareLoopCheck = createNode(
+  'Prepare Loop Check',
+  'n8n-nodes-base.code',
+  {
+    jsCode: PREPARE_LOOP_CHECK_CODE,
+    mode: 'runOnceForAllItems',
+  },
+  { position: [1824, 400], typeVersion: 2 },
+);
+
+const loopIncr = createNode(
+  'Loop INCR',
+  'n8n-nodes-base.httpRequest',
+  {
+    method: 'POST',
+    url: UPSTASH_URL,
+    authentication: 'genericCredentialType',
+    genericAuthType: 'httpHeaderAuth',
+    sendBody: true,
+    specifyBody: 'json',
+    jsonBody: '={{ $json.redisBody }}',
+    options: {},
+  },
+  { position: [2048, 400], typeVersion: 4.2, credentials: UPSTASH_CREDENTIAL },
+);
+loopIncr.onError = 'continueRegularOutput';
+
+const loopThreshold = createNode(
+  'Loop Threshold',
+  'n8n-nodes-base.filter',
+  {
+    conditions: {
+      options: {
+        caseSensitive: true,
+        leftValue: '',
+        typeValidation: 'strict',
+      },
+      conditions: [
+        {
+          id: crypto.randomUUID(),
+          leftValue: '={{ $json.result >= 4 }}',
+          rightValue: '',
+          operator: {
+            type: 'boolean',
+            operation: 'true',
+            singleValue: true,
+          },
+        },
+      ],
+      combinator: 'and',
+    },
+    options: {},
+  },
+  { position: [2272, 400], typeVersion: 2 },
+);
+
+const loopAlert = createNode(
+  'Loop Alert',
+  'n8n-nodes-base.pushover',
+  {
+    userKey: PUSHOVER_USER_KEY,
+    message: '=LOOP DETECTED: Contact {{ $("Prepare Loop Check").item.json.email }} modified {{ $json.result }} times in 5-minute window. Possible Notion/Mailchimp oscillation.',
+    priority: 1,
+    additionalFields: {},
+  },
+  {
+    typeVersion: 1,
+    position: [2496, 400],
+    credentials: PUSHOVER_CREDENTIAL,
+  },
+);
+
+// ---------------------------------------------------------------------------
 // Assemble workflow
 // ---------------------------------------------------------------------------
 
@@ -492,6 +602,7 @@ export default createWorkflow('Notion Master Contact Upsert', {
   nodes: [
     trigger, hasEmail, lookup, markExisting, markInbound,
     pairRecords, ifExists, buildUpdateBody, update, buildCreateBody, create,
+    prepareLoopCheck, loopIncr, loopThreshold, loopAlert,
   ],
   connections: [
     connect(trigger, hasEmail),
@@ -505,6 +616,13 @@ export default createWorkflow('Notion Master Contact Upsert', {
     connect(buildUpdateBody, update),
     connect(ifExists, buildCreateBody, 1, 0),  // false → Build Create Body
     connect(buildCreateBody, create),          // → Create Contact (HTTP POST)
+
+    // Loop detection (parallel to write — failures here never affect the upsert)
+    connect(buildUpdateBody, prepareLoopCheck),   // updates count toward loop
+    connect(buildCreateBody, prepareLoopCheck),   // creates count toward loop
+    connect(prepareLoopCheck, loopIncr),
+    connect(loopIncr, loopThreshold),
+    connect(loopThreshold, loopAlert),
   ],
   tags: ['sub-workflow', 'contacts'],
 });
