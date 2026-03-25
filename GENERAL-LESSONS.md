@@ -65,6 +65,36 @@ The workflow JSON must include `staticData: null`, `pinData: {}`, `meta: { templ
 - `typeVersion` must be `1.1` for input modes to work at all
 - The `defineBelow` / `workflowInputs` mode has a known bug where fields don't render on JSON import; use `jsonExample` mode instead
 
+### Execute Workflow v1.2 needs `workflowInputs` when target uses typed inputs
+When a sub-workflow's trigger uses `inputSource: 'jsonExample'` (which defines expected field names and types), the calling Execute Workflow node **must** include `workflowInputs` — not just `options: {}`. Without it, the sub-workflow receives no data (all fields are undefined).
+
+Required structure:
+```json
+"workflowInputs": {
+  "mappingMode": "defineBelow",
+  "value": {
+    "FieldName": "={{ $json.sourceField }}",
+    "AnotherField": "={{ $json[\"Source Field\"] }}"
+  },
+  "matchingColumns": [],
+  "schema": [
+    {
+      "id": "FieldName",
+      "displayName": "FieldName",
+      "required": false,
+      "defaultMatch": false,
+      "display": true,
+      "canBeUsedToMatch": true,
+      "type": "string"
+    }
+  ],
+  "attemptToConvertTypes": false,
+  "convertFieldsToString": true
+}
+```
+
+The `schema` array must list every field the sub-workflow expects, with matching `id`/`displayName`. The `value` object maps each schema field to an expression that reads from the current item's JSON. Field names in `value` must match the schema `id` values exactly (including typos in legacy schemas).
+
 ### Filter & IF node (v2) condition structure
 - `conditions.options` **must** include `typeValidation: 'strict'` — without it, conditions may not render after import
 - Operator names must match n8n internals exactly:
