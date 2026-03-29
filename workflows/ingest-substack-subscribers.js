@@ -248,17 +248,18 @@ const upsertContact = createNode(
 );
 upsertContact.alwaysOutputData = true;
 
-// Merge ensures the file-move step runs regardless of whether there were
-// valid records. Input 0 = records processed, Input 1 = no valid records.
+// Merge acts as a join gate — waits for both branches to complete, then
+// emits so the file-move step always runs. alwaysOutputData guarantees at
+// least one empty item even if both inputs are empty.
 const merge = createNode(
   'Merge',
   'n8n-nodes-base.merge',
   {
     mode: 'chooseBranch',
-    output: 'input2',
   },
   { position: [2200, 0], typeVersion: 3 },
 );
+merge.alwaysOutputData = true;
 
 // Build the destination path: move the file into a /Processed/ subfolder.
 const buildProcessedPath = createNode(

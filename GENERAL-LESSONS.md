@@ -543,6 +543,10 @@ Key details:
 - **Do NOT put query parameters in the URL string** when using `updateAParameterInEachRequest` with `type: 'queryString'`. The pagination engine adds/replaces query string parameters, but if the same parameter (e.g., `offset`) is also hardcoded in the URL string, the URL version takes precedence and pagination never advances (the node detects 5 identical responses and stops). Instead, use `sendQuery: true` with `queryParameters` to set initial values, so the pagination engine can properly replace them.
 - **Do NOT duplicate pagination-managed parameters in `queryParameters`**. If the pagination config manages a parameter (e.g., `offset` via `type: 'queryString'`), do NOT also set it in the node's `queryParameters`. The initial request will use `queryParameters`, but subsequent requests may conflict. Only put non-paginated parameters (e.g., `count`) in `queryParameters`; let the pagination config be the sole owner of the paginated parameter.
 
+### Merge v3 `chooseBranch` mode
+- Use `useDataOfInput: N` (number, 1-indexed) to select a specific input. The legacy `output: 'inputN'` string format triggers a UI warning ("The value 'inputN' is not supported!").
+- **As a join gate** (synchronize branches, don't care about data): omit `useDataOfInput` entirely and set `alwaysOutputData = true` on the node. This ensures at least one item is emitted regardless of which branch produced data, so downstream nodes always execute.
+
 ### Merge (combineByPosition) for preserving context through HTTP Request nodes
 When an HTTP Request node replaces item data with the API response, use a **fork + Merge** pattern to preserve the original context. Connect the upstream node to BOTH the HTTP Request node AND the Merge node's second input. The Merge (combineByPosition) pairs each HTTP response (input 0) with the original plan item (input 1), combining all fields into one item. This only works reliably when the item count is identical on both inputs (1:1 mapping).
 
