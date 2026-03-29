@@ -62,10 +62,10 @@ const DB_TO_PIPELINE = {
 const STAGE_TASKS = {
   // Sales Pipeline
   '2ed21e43-d3a5-45f4-8cf4-a2a8f61a264f': {
-    'Captured 5%':    { taskName: 'Qualify lead: {deal}',            dueDays: 3, priority: 'Medium' },
-    'Qualified 25%':  { taskName: 'Schedule discovery call: {deal}', dueDays: 5, priority: 'Medium' },
-    'Proposed 50%':   { taskName: 'Follow up on proposal: {deal}',  dueDays: 5, priority: 'Medium' },
-    'Negotiating 90%': { taskName: 'Close deal: {deal}',            dueDays: 5, priority: 'High' },
+    'Captured 5%':     { taskName: 'Schedule discovery call: {deal}', dueDays: 3, priority: 'Medium' },
+    'Qualified 25%':   { taskName: 'Create proposal: {deal}',       dueDays: 3, priority: 'High' },
+    'Proposed 50%':    { taskName: 'Follow up on proposal: {deal}', dueDays: 5, priority: 'Medium' },
+    'Negotiating 90%': { taskName: 'Finalize contract: {deal}',     dueDays: 5, priority: 'High' },
   },
   // Partner Pipeline
   '457cfa4c-123b-4718-a7d3-c8bf7ea4a27e': {
