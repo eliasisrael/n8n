@@ -13,7 +13,11 @@
  *   - No page ID provided (non-Notion caller) → bypass guard entirely
  *
  * Flow:
- *   Trigger → Enforce Required Format → Find Existing Subs → Enforce Email
+ *   Trigger → Enforce Required Format → Validate Email
+ *     ├─[OK] Email Valid? (mx + spam) → Find Existing Subs
+ *     └─[Error] Service Down? → true (5xx): bypass to Find Existing Subs
+ *                              → false (4xx): drop (invalid email)
+ *   Find Existing Subs → Validate Lookup → Enforce Email
  *   Lowercase → NOTIONID Guard → Guard Filter → Switch
  *     ├─[Update — merge fields] Filter Merge Fields Changed → Remove Cleaned
  *     │    → Build Update Record → Update Subscribers
@@ -100,6 +104,93 @@ const enforceFormat = createNode(
   { position: [384, -336], typeVersion: 3.4 },
 );
 
+// 2b. Validate Email — call UserCheck to verify syntax, MX, and spam status.
+//     Returns 400 for invalid syntax, 200 with mx/spam fields for valid domains.
+//     Error output (output 1) catches both 400s and service outages.
+const validateEmail = createNode(
+  'Validate Email',
+  'n8n-nodes-base.httpRequest',
+  {
+    url: '=https://api.usercheck.com/email/{{ encodeURI($json.email_address) }}',
+    authentication: 'genericCredentialType',
+    genericAuthType: 'httpHeaderAuth',
+    sendQuery: true,
+    queryParameters: { parameters: [{}] },
+    options: {},
+  },
+  {
+    position: [608, -336],
+    typeVersion: 4.2,
+    credentials: { httpHeaderAuth: { id: 'sGklpGDze5oWu3MF', name: 'UserCheck API' } },
+  },
+);
+validateEmail.retryOnFail = true;
+validateEmail.onError = 'continueErrorOutput';
+
+// 2c. Email Valid? — require MX record exists and not flagged as spam.
+const emailValid = createNode(
+  'Email Valid?',
+  'n8n-nodes-base.filter',
+  {
+    conditions: {
+      options: {
+        caseSensitive: true,
+        leftValue: '',
+        typeValidation: 'strict',
+        version: 2,
+      },
+      conditions: [
+        {
+          id: crypto.randomUUID(),
+          leftValue: '={{ $json.mx }}',
+          rightValue: '',
+          operator: { type: 'boolean', operation: 'true', singleValue: true },
+        },
+        {
+          id: crypto.randomUUID(),
+          leftValue: '={{ $json.spam }}',
+          rightValue: '',
+          operator: { type: 'boolean', operation: 'false', singleValue: true },
+        },
+      ],
+      combinator: 'and',
+    },
+    options: {},
+  },
+  { position: [832, -336], typeVersion: 2.2 },
+);
+
+// 2d. Service Down? — distinguish 400 (bad email, drop) from 5xx (outage, bypass).
+//     On the error output from Validate Email, check the status code. If it's a
+//     client error (4xx), the email itself is invalid — stop. If it's a server
+//     error or network failure, let the contact through so a UserCheck outage
+//     doesn't block processing.
+const serviceDown = createNode(
+  'Service Down?',
+  'n8n-nodes-base.if',
+  {
+    conditions: {
+      options: {
+        caseSensitive: true,
+        leftValue: '',
+        typeValidation: 'loose',
+        version: 2,
+      },
+      conditions: [
+        {
+          id: crypto.randomUUID(),
+          leftValue: '={{ $json.statusCode || 500 }}',
+          rightValue: '500',
+          operator: { type: 'number', operation: 'gte' },
+        },
+      ],
+      combinator: 'and',
+    },
+    options: {},
+  },
+  { position: [832, -144], typeVersion: 2.2 },
+);
+
 // 3. Find Existing Subs — Mailchimp GET by email
 //    onError: continueRegularOutput handles 404 for new subscribers
 const findExisting = createNode(
@@ -109,10 +200,10 @@ const findExisting = createNode(
     authentication: 'oAuth2',
     operation: 'get',
     list: MAILCHIMP_LIST_ID,
-    email: '={{ $json.email_address }}',
+    email: "={{ $('Enforce Required Format').item.json.email_address }}",
     options: {},
   },
-  { position: [608, -336], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
+  { position: [1056, -336], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
 );
 findExisting.retryOnFail = true;
 findExisting.maxTries = 3;
@@ -147,7 +238,7 @@ if (typeof j.error === 'string' && j.error.length > 0) {
 // No id and no error — pass through to Create branch
 return $input.item;`,
   },
-  { position: [720, -336], typeVersion: 2 },
+  { position: [1280, -336], typeVersion: 2 },
 );
 
 // 4. Enforce Email Lowercase — normalize the lookup result email
@@ -168,7 +259,7 @@ const enforceEmailLower = createNode(
     includeOtherFields: true,
     options: {},
   },
-  { position: [944, -336], typeVersion: 3.4 },
+  { position: [1504, -336], typeVersion: 3.4 },
 );
 
 // 5. NOTIONID Guard — Code node that compares incoming page ID with Mailchimp NOTIONID
@@ -197,7 +288,7 @@ if (!incomingId) {
 
 return $input.item;`,
   },
-  { position: [1056, -336], typeVersion: 2 },
+  { position: [1728, -336], typeVersion: 2 },
 );
 
 // 6. Guard Filter — drop items where guard says skip
@@ -227,7 +318,7 @@ const guardFilter = createNode(
     },
     options: {},
   },
-  { position: [1280, -336], typeVersion: 2.2 },
+  { position: [1952, -336], typeVersion: 2.2 },
 );
 
 // 7. Switch — existing member (Update) vs new member (Create)
@@ -291,7 +382,7 @@ const switchNode = createNode(
     },
     options: {},
   },
-  { position: [1504, -336], typeVersion: 3.2 },
+  { position: [2176, -336], typeVersion: 3.2 },
 );
 
 // ---------------------------------------------------------------------------
@@ -348,7 +439,7 @@ const filterMergeFields = createNode(
     },
     options: {},
   },
-  { position: [1728, -720], typeVersion: 2.2 },
+  { position: [2400, -720], typeVersion: 2.2 },
 );
 
 // 8b. Filter: Tags Changed — only update tags when incoming has tags NOT already
@@ -377,7 +468,7 @@ const filterTagsChanged = createNode(
     },
     options: {},
   },
-  { position: [1728, -528], typeVersion: 2.2 },
+  { position: [2400, -528], typeVersion: 2.2 },
 );
 
 // 9. Remove Cleaned Entries — skip if Mailchimp status is "cleaned"
@@ -404,7 +495,7 @@ const removeCleaned = createNode(
     },
     options: {},
   },
-  { position: [1952, -720], typeVersion: 2.2 },
+  { position: [2624, -720], typeVersion: 2.2 },
 );
 
 // 10. Build Update Record — merge incoming data with existing, include NOTIONID
@@ -472,7 +563,7 @@ const buildUpdate = createNode(
     },
     options: {},
   },
-  { position: [2176, -720], typeVersion: 3.4 },
+  { position: [2848, -720], typeVersion: 3.4 },
 );
 
 // 11. Update Subscribers — Mailchimp update with NOTIONID in merge fields
@@ -496,7 +587,7 @@ const updateSubs = createNode(
       status: '={{ $json.status }}',
     },
   },
-  { position: [2400, -720], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
+  { position: [3072, -720], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
 );
 updateSubs.retryOnFail = true;
 updateSubs.maxTries = 3;
@@ -527,7 +618,7 @@ oldTags.forEach(obj => {
 $input.item.json.updatedTags = updatedTags;
 return $input.item;`,
   },
-  { position: [1952, -528], typeVersion: 2 },
+  { position: [2624, -528], typeVersion: 2 },
 );
 
 // 13. Record Tags — POST tag updates to Mailchimp API
@@ -551,7 +642,7 @@ const recordTags = createNode(
       },
     },
   },
-  { position: [2176, -528], typeVersion: 4.3, credentials: MAILCHIMP_CREDENTIAL },
+  { position: [2848, -528], typeVersion: 4.3, credentials: MAILCHIMP_CREDENTIAL },
 );
 recordTags.retryOnFail = true;
 recordTags.waitBetweenTries = 2000;
@@ -582,7 +673,7 @@ const insertNew = createNode(
       ],
     },
   },
-  { position: [1728, -240], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
+  { position: [2400, -240], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
 );
 insertNew.retryOnFail = true;
 insertNew.maxTries = 3;
@@ -627,7 +718,7 @@ const claimFilterUpdate = createNode(
   'If Claiming',
   'n8n-nodes-base.filter',
   { conditions: shouldClaimConditions(), options: {} },
-  { position: [2624, -720], typeVersion: 2.2 },
+  { position: [3296, -720], typeVersion: 2.2 },
 );
 
 // Set node: extract web_id + data center from Mailchimp response, build admin URL
@@ -655,7 +746,7 @@ const buildWritebackUpdate = createNode(
     includeOtherFields: false,
     options: {},
   },
-  { position: [2848, -720], typeVersion: 3.4 },
+  { position: [3520, -720], typeVersion: 3.4 },
 );
 
 const writeUrlUpdate = createNode(
@@ -677,7 +768,7 @@ const writeUrlUpdate = createNode(
       batching: { batch: { batchSize: 1, batchInterval: 334 } },
     },
   },
-  { position: [3072, -720], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
+  { position: [3744, -720], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
 );
 writeUrlUpdate.retryOnFail = true;
 writeUrlUpdate.maxTries = 3;
@@ -689,7 +780,7 @@ const claimFilterCreate = createNode(
   'If Claiming (New)',
   'n8n-nodes-base.filter',
   { conditions: shouldClaimConditions(), options: {} },
-  { position: [1952, -144], typeVersion: 2.2 },
+  { position: [2624, -144], typeVersion: 2.2 },
 );
 
 // Create path: Mailchimp response is nested under $json.mailchimp
@@ -716,7 +807,7 @@ const buildWritebackCreate = createNode(
     includeOtherFields: false,
     options: {},
   },
-  { position: [2176, -144], typeVersion: 3.4 },
+  { position: [2848, -144], typeVersion: 3.4 },
 );
 
 const writeUrlCreate = createNode(
@@ -738,7 +829,7 @@ const writeUrlCreate = createNode(
       batching: { batch: { batchSize: 1, batchInterval: 334 } },
     },
   },
-  { position: [2400, -144], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
+  { position: [3072, -144], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
 );
 writeUrlCreate.retryOnFail = true;
 writeUrlCreate.maxTries = 3;
@@ -750,7 +841,8 @@ writeUrlCreate.waitBetweenTries = 1000;
 
 export default createWorkflow('Create or Update Mailchimp Record', {
   nodes: [
-    trigger, enforceFormat, findExisting, validateLookup, enforceEmailLower,
+    trigger, enforceFormat, validateEmail, emailValid, serviceDown,
+    findExisting, validateLookup, enforceEmailLower,
     notionIdGuard, guardFilter, switchNode,
     // Update branch — merge fields path
     filterMergeFields, removeCleaned, buildUpdate, updateSubs,
@@ -766,7 +858,12 @@ export default createWorkflow('Create or Update Mailchimp Record', {
   connections: [
     // Main chain
     connect(trigger, enforceFormat),
-    connect(enforceFormat, findExisting),
+    connect(enforceFormat, validateEmail),
+    connect(validateEmail, emailValid, 0),        // success → mx/spam filter
+    connect(validateEmail, serviceDown, 1),       // error → check status code
+    connect(emailValid, findExisting),
+    connect(serviceDown, findExisting, 0),        // true (5xx) → bypass, let through
+    // false (4xx) → bad email, silently dropped
     connect(findExisting, validateLookup),
     connect(validateLookup, enforceEmailLower),
     connect(enforceEmailLower, notionIdGuard),
