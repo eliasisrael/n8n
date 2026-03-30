@@ -9,7 +9,7 @@
  * Flow:
  *   1. Webhook receives POST from Webflow
  *   2. Code node validates HMAC-SHA256 signature
- *   3. IF node gates on signature — invalid → 401 response + Stop and Error
+ *   3. IF node gates on signature — invalid → respond 200 and ignore
  *   4. Code node maps Webflow payload → contact fields
  *   5. UserCheck validates email (syntax, MX, spam)
  *      — 4xx error (bad email) → silently dropped
@@ -110,26 +110,16 @@ const ifTrusted = createNode(
   { position: [416, 0], typeVersion: 2 },
 );
 
-// Respond 401 Unauthorized when signature is invalid.
-const respondUnauthorized = createNode(
-  'Respond 401 (Bad Signature)',
+// Respond 200 and silently ignore when signature is invalid.
+// No error — spam submissions are expected and not worth alerting on.
+const respondIgnore = createNode(
+  'Ignore Bad Signature',
   'n8n-nodes-base.respondToWebhook',
   {
     respondWith: 'noData',
-    options: { responseCode: 401 },
+    options: { responseCode: 200 },
   },
   { position: [624, 200], typeVersion: 1.5 },
-);
-
-// Throw error so it gets reported via the Error Handler workflow.
-const stopBadSignature = createNode(
-  'Stop: Bad Signature',
-  'n8n-nodes-base.stopAndError',
-  {
-    errorType: 'errorMessage',
-    errorMessage: '=Webflow webhook HMAC signature verification failed. Received request from {{ $("Webhook").item.json.headers?.host || "unknown" }}',
-  },
-  { position: [832, 200], typeVersion: 1 },
 );
 
 // Map the Webflow payload into the contact shape expected by the upsert
@@ -297,13 +287,12 @@ const respondOk = createNode(
 // ---------------------------------------------------------------------------
 
 export default createWorkflow('MDI Subscriber Hook', {
-  nodes: [webhook, validateSignature, ifTrusted, respondUnauthorized, stopBadSignature, mapToContact, hasEmail, validateEmail, emailValid, serviceDown, upsertContact, respondOk],
+  nodes: [webhook, validateSignature, ifTrusted, respondIgnore, mapToContact, hasEmail, validateEmail, emailValid, serviceDown, upsertContact, respondOk],
   connections: [
     connect(webhook, validateSignature),
     connect(validateSignature, ifTrusted),
     connect(ifTrusted, mapToContact, 0, 0),                  // true (trusted) → continue
-    connect(ifTrusted, respondUnauthorized, 1, 0),            // false (untrusted) → respond 401
-    connect(respondUnauthorized, stopBadSignature),            // then throw error for Error Handler
+    connect(ifTrusted, respondIgnore, 1, 0),                   // false (untrusted) → respond 200, ignore
     connect(mapToContact, hasEmail),
     connect(hasEmail, validateEmail),
     connect(validateEmail, emailValid, 0),          // success → mx/spam filter
