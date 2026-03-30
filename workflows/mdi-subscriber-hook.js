@@ -11,7 +11,10 @@
  *   2. Code node validates HMAC-SHA256 signature
  *   3. IF node gates on signature — invalid → 401 response + Stop and Error
  *   4. Code node maps Webflow payload → contact fields
- *   5. Execute Workflow calls Notion Master Contact Upsert
+ *   5. UserCheck validates email (syntax, MX, spam)
+ *      — 4xx error (bad email) → silently dropped
+ *      — 5xx error (outage) → bypasses to upsert
+ *   6. Execute Workflow calls Notion Master Contact Upsert
  *
  * The sub-workflow handles lookup, merge, and create/update logic.
  * Tags are unioned (not replaced) on existing contacts, so the
@@ -180,7 +183,81 @@ const hasEmail = createNode(
     },
     options: {},
   },
-  { position: [728, 0], typeVersion: 2.2 },
+  { position: [848, 0], typeVersion: 2.2 },
+);
+
+// Validate the email address via UserCheck API — checks syntax, MX, spam.
+// Error output (output 1) routes to Service Down? to distinguish 4xx (bad
+// email, drop) from 5xx (outage, bypass to upsert).
+const validateEmail = createNode(
+  'Validate Email',
+  'n8n-nodes-base.httpRequest',
+  {
+    url: '=https://api.usercheck.com/email/{{ encodeURI($json.email) }}',
+    authentication: 'genericCredentialType',
+    genericAuthType: 'httpHeaderAuth',
+    sendQuery: true,
+    queryParameters: { parameters: [{}] },
+    options: {},
+  },
+  {
+    position: [1072, 0],
+    typeVersion: 4.2,
+    credentials: { httpHeaderAuth: { id: 'sGklpGDze5oWu3MF', name: 'UserCheck API' } },
+  },
+);
+validateEmail.retryOnFail = true;
+validateEmail.onError = 'continueErrorOutput';
+
+// Email Valid? — require MX record and no spam flag.
+const emailValid = createNode(
+  'Email Valid?',
+  'n8n-nodes-base.filter',
+  {
+    conditions: {
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
+      conditions: [
+        {
+          id: crypto.randomUUID(),
+          leftValue: '={{ $json.mx }}',
+          rightValue: '',
+          operator: { type: 'boolean', operation: 'true', singleValue: true },
+        },
+        {
+          id: crypto.randomUUID(),
+          leftValue: '={{ $json.spam }}',
+          rightValue: '',
+          operator: { type: 'boolean', operation: 'false', singleValue: true },
+        },
+      ],
+      combinator: 'and',
+    },
+    options: {},
+  },
+  { position: [1296, 0], typeVersion: 2.2 },
+);
+
+// Service Down? — on UserCheck error, distinguish 4xx (bad email) from 5xx (outage).
+// 5xx → bypass to upsert; 4xx → silently drop.
+const serviceDown = createNode(
+  'Service Down?',
+  'n8n-nodes-base.if',
+  {
+    conditions: {
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'loose', version: 2 },
+      conditions: [
+        {
+          id: crypto.randomUUID(),
+          leftValue: '={{ $json.statusCode || 500 }}',
+          rightValue: '500',
+          operator: { type: 'number', operation: 'gte' },
+        },
+      ],
+      combinator: 'and',
+    },
+    options: {},
+  },
+  { position: [1296, 200], typeVersion: 2.2 },
 );
 
 // Call the Notion Master Contact Upsert sub-workflow.
@@ -197,7 +274,7 @@ const upsertContact = createNode(
     },
     options: {},
   },
-  { position: [936, 0], typeVersion: 1.2 },
+  { position: [1520, 0], typeVersion: 1.2 },
 );
 
 // Respond 200 to Webflow only after the upsert succeeds.
@@ -212,7 +289,7 @@ const respondOk = createNode(
       responseCode: 200,
     },
   },
-  { position: [1144, 0], typeVersion: 1.5 },
+  { position: [1744, 0], typeVersion: 1.5 },
 );
 
 // ---------------------------------------------------------------------------
@@ -220,7 +297,7 @@ const respondOk = createNode(
 // ---------------------------------------------------------------------------
 
 export default createWorkflow('MDI Subscriber Hook', {
-  nodes: [webhook, validateSignature, ifTrusted, respondUnauthorized, stopBadSignature, mapToContact, hasEmail, upsertContact, respondOk],
+  nodes: [webhook, validateSignature, ifTrusted, respondUnauthorized, stopBadSignature, mapToContact, hasEmail, validateEmail, emailValid, serviceDown, upsertContact, respondOk],
   connections: [
     connect(webhook, validateSignature),
     connect(validateSignature, ifTrusted),
@@ -228,7 +305,12 @@ export default createWorkflow('MDI Subscriber Hook', {
     connect(ifTrusted, respondUnauthorized, 1, 0),            // false (untrusted) → respond 401
     connect(respondUnauthorized, stopBadSignature),            // then throw error for Error Handler
     connect(mapToContact, hasEmail),
-    connect(hasEmail, upsertContact),
+    connect(hasEmail, validateEmail),
+    connect(validateEmail, emailValid, 0),          // success → mx/spam filter
+    connect(validateEmail, serviceDown, 1),         // error → check status code
+    connect(emailValid, upsertContact),
+    connect(serviceDown, upsertContact, 0),         // true (5xx) → bypass, let through
+    // false (4xx) → bad email, silently dropped
     connect(upsertContact, respondOk),
   ],
   settings: {
