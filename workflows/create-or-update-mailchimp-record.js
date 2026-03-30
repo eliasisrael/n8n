@@ -59,7 +59,7 @@ const trigger = createNode(
       status: 'subscribed',
       FNAME: '',
       LNAME: '',
-      ADDRESS: '',
+      ADDRESS: { addr1: '', addr2: '', city: '', state: '', zip: '', country: 'US' },
       PHONE: '',
       BIRTHDAY: '',
       COMPANY: '',
@@ -538,7 +538,7 @@ const buildUpdate = createNode(
         {
           id: crypto.randomUUID(),
           name: 'ADDRESS',
-          value: "={{ (() => { try { const a = JSON.parse($('Enforce Required Format').item.json.ADDRESS || '{}'); return a.addr1 ? $('Enforce Required Format').item.json.ADDRESS : ($json.merge_fields.ADDRESS || '') } catch(e) { return $json.merge_fields.ADDRESS || '' } })() }}",
+          value: "={{ $('Enforce Required Format').item.json.ADDRESS.addr1 ? $('Enforce Required Format').item.json.ADDRESS : ($json.merge_fields.ADDRESS || '') }}",
           type: 'string',
         },
         {
@@ -668,7 +668,7 @@ const insertNew = createNode(
         { name: 'FNAME', value: "={{ $('Enforce Required Format').item.json.FNAME || '' }}" },
         { name: 'LNAME', value: "={{ $('Enforce Required Format').item.json.LNAME || '' }}" },
         { name: 'COMPANY', value: "={{ $('Enforce Required Format').item.json.COMPANY || '' }}" },
-        { name: 'ADDRESS', value: "={{ (() => { try { const a = JSON.parse($('Enforce Required Format').item.json.ADDRESS || '{}'); return a.addr1 ? $('Enforce Required Format').item.json.ADDRESS : '' } catch(e) { return '' } })() }}" },
+        { name: 'ADDRESS', value: "={{ $('Enforce Required Format').item.json.ADDRESS.addr1 ? $('Enforce Required Format').item.json.ADDRESS : '' }}" },
         { name: 'NOTIONID', value: "={{ $('Enforce Required Format').item.json.notion_page_id || '' }}" },
       ],
     },
