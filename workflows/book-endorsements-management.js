@@ -5,6 +5,9 @@
  * endorsement records between Notion and Webflow.
  *
  * Logic:
+ * - Fetch the full Notion page (simple: false) to get rich_text annotations,
+ *   then convert to HTML for the Webflow rich text field. On fetch error,
+ *   falls back to the plain text already in the trigger input.
  * - If the record already has a WebflowId:
  *   - Filter for valid records (Name, Endorser Name, Title, Body all present)
  *   - Update the Webflow record
@@ -37,6 +40,7 @@ const WEBFLOW_UPDATE_FIELDS = [
   { fieldId: 'endorser-title', fieldValue: '={{ $json["Ensorser Title"] }}' },
   { fieldId: 'organization', fieldValue: '={{ $json.Organization }}' },
   { fieldId: 'endorsemeny-body', fieldValue: '={{ $json["Endorsement Body"] }}' },
+  { fieldId: 'endorsement-body', fieldValue: '={{ $json["Endorsement Body HTML"] }}' },
   { fieldId: 'enabled', fieldValue: '={{ $json.Enabled }}' },
   { fieldId: 'spotlight', fieldValue: '={{ $json.Spotlight }}' },
   { fieldId: 'endorser-title-2', fieldValue: '={{ $json["Endorser Title 2"] }}' },
@@ -48,6 +52,7 @@ const WEBFLOW_CREATE_FIELDS = [
   { fieldId: 'endorser-title', fieldValue: '={{ $json["Ensorser Title"] }}' },
   { fieldId: 'organization', fieldValue: '={{ $json.Organization }}' },
   { fieldId: 'endorsemeny-body', fieldValue: '={{ $json["Endorsement Body"] }}' },
+  { fieldId: 'endorsement-body', fieldValue: '={{ $json["Endorsement Body HTML"] }}' },
   { fieldId: 'enabled', fieldValue: '={{ $json.Enabled }}' },
   { fieldId: 'spotlight', fieldValue: '={{ $json.Spotlight }}' },
   { fieldId: 'name', fieldValue: '={{ $json.Name }}' },
@@ -70,6 +75,82 @@ const trigger = createNode(
     id: 'e73afb2e-36de-48fc-95c9-dbe35ba33d9e',
     typeVersion: 1.1,
     position: [-1104, -64],
+  },
+);
+
+// Fetch the full Notion page with simple: false to get rich_text annotations.
+// Error output connects to Convert to HTML for plain-text fallback.
+const fetchFullPage = createNode(
+  'Fetch Full Page',
+  'n8n-nodes-base.notion',
+  {
+    resource: 'databasePage',
+    operation: 'get',
+    pageId: {
+      __rl: true,
+      value: '={{ $json.NotionId }}',
+      mode: 'id',
+    },
+    simple: false,
+    options: {},
+  },
+  {
+    typeVersion: 2.2,
+    position: [-880, -64],
+    credentials: NOTION_CREDENTIAL,
+  },
+);
+fetchFullPage.onError = 'continueErrorOutput';
+
+// Convert Notion rich_text annotations to HTML for the Webflow rich text field.
+// Receives either:
+//   - Success path: the full Notion page JSON ($json.properties.Endorsement.rich_text)
+//   - Error path: error details (no properties), falls back to plain text
+// In both cases, original trigger data is recovered via node reference.
+// Outputs all original trigger fields plus "Endorsement Body HTML".
+const convertToHTML = createNode(
+  'Convert to HTML',
+  'n8n-nodes-base.code',
+  {
+    mode: 'runOnceForEachItem',
+    jsCode: `\
+// Original trigger data — always available regardless of which path we came from
+const orig = $('When Executed by Another Workflow').item.json;
+
+// Try to extract rich_text from Notion full-page response
+const richText = $json?.properties?.Endorsement?.rich_text;
+
+let html;
+if (Array.isArray(richText) && richText.length > 0) {
+  html = richText.map(segment => {
+    let text = (segment.plain_text || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    const ann = segment.annotations || {};
+    if (ann.code)          text = \`<code>\${text}</code>\`;
+    if (ann.bold)          text = \`<strong>\${text}</strong>\`;
+    if (ann.italic)        text = \`<em>\${text}</em>\`;
+    if (ann.strikethrough) text = \`<s>\${text}</s>\`;
+    if (ann.underline)     text = \`<u>\${text}</u>\`;
+    if (segment.href)      text = \`<a href="\${segment.href}">\${text}</a>\`;
+    return text;
+  }).join('');
+} else {
+  // Fallback: use plain text from original trigger data
+  html = orig['Endorsement Body'] || '';
+}
+
+return {
+  json: {
+    ...orig,
+    'Endorsement Body HTML': html,
+  },
+};`,
+  },
+  {
+    typeVersion: 2,
+    position: [-656, -64],
   },
 );
 
@@ -105,7 +186,7 @@ const alreadyStored = createNode(
   {
     id: '721bece8-d5fa-499c-a9b7-63ea43a6f2d1',
     typeVersion: 2.2,
-    position: [-880, -64],
+    position: [-432, -64],
   },
 );
 
@@ -153,7 +234,7 @@ const filter = createNode(
   {
     id: '3402499a-5fbb-45d4-8960-5af0366eeb2a',
     typeVersion: 2.2,
-    position: [-656, -160],
+    position: [-208, -160],
   },
 );
 
@@ -171,7 +252,7 @@ const updateWebflowRecord = createNode(
   {
     id: '47ef1809-699a-4c4e-a580-6b44471e30d9',
     typeVersion: 2,
-    position: [-432, -160],
+    position: [16, -160],
     credentials: WEBFLOW_CREDENTIAL,
   },
 );
@@ -215,7 +296,7 @@ const activeAndPublishable = createNode(
   {
     id: '487bf79f-7f0a-42a2-92b2-472f4e0cfd39',
     typeVersion: 2.2,
-    position: [-656, 32],
+    position: [-208, 32],
   },
 );
 activeAndPublishable.retryOnFail = false;
@@ -233,7 +314,7 @@ const createInWebflow = createNode(
   {
     id: '00393552-ec4c-4a1c-877a-01a460b6bd0d',
     typeVersion: 2,
-    position: [-432, 32],
+    position: [16, 32],
     credentials: WEBFLOW_CREDENTIAL,
   },
 );
@@ -260,7 +341,7 @@ const storeWebflowId = createNode(
   {
     id: 'b9fb32bc-744d-48ca-a751-bf2456e466e9',
     typeVersion: 2.2,
-    position: [-208, 32],
+    position: [240, 32],
     credentials: NOTION_CREDENTIAL,
   },
 );
@@ -272,17 +353,22 @@ storeWebflowId.retryOnFail = true;
 
 export default createWorkflow('Book Endorsements Management', {
   nodes: [
+    trigger,
+    fetchFullPage,
+    convertToHTML,
     alreadyStored,
     storeWebflowId,
     updateWebflowRecord,
     activeAndPublishable,
     createInWebflow,
-    trigger,
     filter,
   ],
   connections: [
-    // Entry
-    connect(trigger, alreadyStored),
+    // Entry: fetch full page for rich text, then convert to HTML
+    connect(trigger, fetchFullPage),
+    connect(fetchFullPage, convertToHTML, 0, 0),   // success → convert
+    connect(fetchFullPage, convertToHTML, 1, 0),   // error → convert (plain text fallback)
+    connect(convertToHTML, alreadyStored),
 
     // Already Stored? true (output 0) → validate and update
     connect(alreadyStored, filter, 0, 0),
