@@ -731,3 +731,9 @@ Key patterns:
 
 ### Reddit API requires OAuth — use oauth.reddit.com
 Reddit's public `.json` endpoints (`www.reddit.com/r/.../top.json`) return 403 for unauthenticated requests. Authenticated requests must use `oauth.reddit.com` as the host (not `www.reddit.com`). In n8n, attach the `redditOAuth2Api` credential to an HTTP Request node via `authentication: 'predefinedCredentialType'` + `nodeCredentialType: 'redditOAuth2Api'`. When a workflow fetches from multiple APIs (some needing auth, some not), split the fetch into separate HTTP Request nodes using an IF node on `sourceType`, then recombine results with a Merge (append) before normalizing.
+
+### Webflow field slugs can differ from what you expect
+When creating a new Webflow CMS field, the auto-generated slug may have a numeric suffix if a similar slug already exists. For example, creating a field named "Endorsement Body" when a field with slug `endorsement-body` (or close variant) is already in the collection results in a slug of `endorsement-body-2`. Always verify the actual slug in Webflow Designer (field settings panel) before referencing it in n8n workflows. The Webflow API returns `"Field not described in schema: undefined"` (400) when a field slug is not found — this is the diagnostic for a wrong slug.
+
+### Plain text vs Rich Text elements in Webflow
+Webflow CMS rich text fields must be bound to a **Rich Text element** (a div-based block), not a plain Text Block. If an existing page uses a Text Block bound to the old plain text field, replace it with a Rich Text element and re-bind to the new rich text field. Style the nested elements (p, strong, em, a, etc.) using the nested elements section of the Rich Text element's style panel.
