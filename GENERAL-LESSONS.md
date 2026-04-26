@@ -701,6 +701,28 @@ The Dropbox node v1 `upload` operation defaults to text mode, reading from a `fi
 
 ## External API Patterns
 
+### Mandrill: Mailchimp Transactional templates use a different endpoint than native templates
+Mandrill has two distinct template systems and they are NOT interchangeable:
+
+| Type | Identifier | List endpoint | Send endpoint | n8n built-in node? |
+|------|-----------|---------------|---------------|--------------------|
+| Native Mandrill | `template_name` (slug) | `/templates/list` | `/messages/send-template` | Yes (`mandrill` node, `sendTemplate` op) |
+| Mailchimp Transactional | `mc_template_id` (integer) | `/mctemplates/list` | `/messages/send-mc-template` | **No** — must use HTTP Request |
+
+If a Mandrill account was provisioned with a Mailchimp account attached, all templates created in the Mailchimp UI live as **mctemplates** (integer IDs visible in the Mailchimp template editor URL). `/templates/list` will return an empty array even though templates exist; `/mctemplates/list` is the correct call.
+
+The n8n built-in Mandrill node (`n8n-nodes-base.mandrill`, typeVersion 1) only exposes `sendTemplate`, which hits `/messages/send-template`. For mctemplates, fall back to an HTTP Request node calling `/messages/send-mc-template` directly. The API key goes in the JSON body as `key` (not an HTTP header), so use a `httpCustomAuth` generic credential with `{"body": {"key": "..."}}` — n8n merges those body fields into the request at execution time, keeping the key out of the compiled workflow JSON.
+
+### Mandrill: Mailchimp Transactional templates only substitute `global_merge_vars`, not per-recipient `merge_vars`
+For mctemplates (Mailchimp Transactional templates), the `message.merge_vars` per-recipient form (`[{ rcpt, vars: [...] }]`) is **silently ignored** during template substitution — the email sends successfully (`status: sent`) but `*|FNAME|*` etc. remain unsubstituted in the body. Use `message.global_merge_vars` (flat array) instead. For single-recipient sends the two are functionally equivalent for substitution; only globals work for mctemplates.
+
+This quirk does NOT apply to native Mandrill templates (`/messages/send-template` with a slug) — those honor both forms.
+
+To debug merge issues without sending: call `/mctemplates/render` with merge_vars and inspect the returned `html` for any leftover `*|TAG|*` or `{{tag}}` patterns.
+
+### Mandrill: account in demo mode rejects external recipients with `recipient-domain-mismatch`
+A Mandrill/Mailchimp Transactional account that hasn't been activated (no email credits purchased) is in **demo mode**. Sends succeed with HTTP 200 but each recipient comes back as `status: rejected` with `reject_reason: recipient-domain-mismatch` unless their address is on the same verified domain as the sender. Activate the account by purchasing email credits in **Settings → Subscription** to lift the restriction. Domain authentication (DKIM/SPF/DMARC in Settings → Sending Domains) is a separate prerequisite and is required even after activation.
+
 ### Microsoft Graph API via HTTP Request with Outlook OAuth2 credential
 Use `authentication: 'predefinedCredentialType'` with `nodeCredentialType: 'microsoftOutlookOAuth2Api'` to call the Microsoft Graph API from an HTTP Request node, reusing the same Outlook credential used by the Microsoft Outlook node. The credential handles OAuth2 token management automatically.
 

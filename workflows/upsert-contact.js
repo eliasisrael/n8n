@@ -549,15 +549,19 @@ const loopIncr = createNode(
 );
 loopIncr.onError = 'continueRegularOutput';
 
+// IF (not Filter) so we have an explicit false-branch output (output 1) that
+// can flow into Return Contact alongside the rest, making Return Contact the
+// sole terminal of the sub-workflow.
 const loopThreshold = createNode(
   'Loop Threshold',
-  'n8n-nodes-base.filter',
+  'n8n-nodes-base.if',
   {
     conditions: {
       options: {
         caseSensitive: true,
         leftValue: '',
         typeValidation: 'strict',
+        version: 2,
       },
       conditions: [
         {
@@ -575,7 +579,7 @@ const loopThreshold = createNode(
     },
     options: {},
   },
-  { position: [2272, 400], typeVersion: 2 },
+  { position: [2272, 400], typeVersion: 2.2 },
 );
 
 const loopAlert = createNode(
@@ -595,6 +599,59 @@ const loopAlert = createNode(
 );
 
 // ---------------------------------------------------------------------------
+// Return Contact — single terminal node
+//
+// All paths in the sub-workflow converge here so callers see exactly one
+// main[0] output channel. For each upserted contact (update or create),
+// emits exactly one record on the output. Side-channel responses from the
+// loop-detection chain (Redis INCR, Pushover) are filtered out.
+//
+// Multi-item correctness:
+//   - The sub-workflow can receive N inbound records and must return N
+//     records on output (one per upserted contact, paired back to the
+//     correct input via pairedItem).
+//   - Update Contact emits one Notion page per update; Create Contact emits
+//     one Notion page per create. Together these account for every record
+//     that passed the Has Email? filter.
+//   - The loop chain emits Redis/Pushover responses on the same merged input
+//     stream — we drop them by checking object === 'page'.
+//
+// Output shape per item:
+//   { id, page_id, email, properties, notion: <full page response> }
+// ---------------------------------------------------------------------------
+
+const RETURN_CONTACT_CODE = `
+const results = [];
+for (const item of $input.all()) {
+  const json = item.json;
+  // Drop side-channel outputs from the loop-detection chain.
+  if (!json || json.object !== 'page' || !json.id) continue;
+
+  const titleProp = json.properties?.Identifier?.title?.[0];
+  const email = titleProp?.plain_text || titleProp?.text?.content || null;
+
+  results.push({
+    json: {
+      id: json.id,
+      page_id: json.id,
+      email,
+      properties: json.properties,
+      notion: json,
+    },
+    pairedItem: item.pairedItem,
+  });
+}
+return results;
+`.trim();
+
+const returnContact = createNode(
+  'Return Contact',
+  'n8n-nodes-base.code',
+  { jsCode: RETURN_CONTACT_CODE, mode: 'runOnceForAllItems' },
+  { position: [2720, 300], typeVersion: 2 },
+);
+
+// ---------------------------------------------------------------------------
 // Assemble workflow
 // ---------------------------------------------------------------------------
 
@@ -603,6 +660,7 @@ export default createWorkflow('Notion Master Contact Upsert', {
     trigger, hasEmail, lookup, markExisting, markInbound,
     pairRecords, ifExists, buildUpdateBody, update, buildCreateBody, create,
     prepareLoopCheck, loopIncr, loopThreshold, loopAlert,
+    returnContact,
   ],
   connections: [
     connect(trigger, hasEmail),
@@ -622,7 +680,15 @@ export default createWorkflow('Notion Master Contact Upsert', {
     connect(buildCreateBody, prepareLoopCheck),   // creates count toward loop
     connect(prepareLoopCheck, loopIncr),
     connect(loopIncr, loopThreshold),
-    connect(loopThreshold, loopAlert),
+    connect(loopThreshold, loopAlert, 0, 0),       // true (>= 4 events) → Pushover alert
+
+    // Single terminal — every output path funnels through Return Contact, which
+    // filters to keep only the Notion page record so the parent receives the
+    // upserted contact on main[0].
+    connect(update, returnContact),
+    connect(create, returnContact),
+    connect(loopThreshold, returnContact, 1, 0),   // false branch (no loop) → discard
+    connect(loopAlert, returnContact),             // alert sent → discard
   ],
   tags: ['sub-workflow', 'contacts'],
 });
