@@ -17,9 +17,13 @@
  *   4. Merge (outer join on Identifier) so every incoming record is
  *      paired with its Notion match (if any)
  *   5. If found → merge (prefer non-null incoming values) → build Notion
- *      API request body (only non-null properties) → HTTP PATCH to update
+ *      API request body. Has Update? gate: if any field actually changes,
+ *      HTTP PATCH; otherwise skip the PATCH and forward the existing page
+ *      directly to Return Contact (preserving N-in-N-out).
  *   6. If not found → build Notion API request body (only non-null
  *      properties) → HTTP POST to create
+ *   7. Return Contact: single terminal that emits the upserted page record
+ *      ({ id, page_id, email, properties, notion }) per inbound contact.
  *
  * After import into n8n:
  *   - Verify the "Eve Notion Account" credential is connected on the Lookup
@@ -115,7 +119,7 @@ const trigger = createNode(
       phone: '+1-555-123-4567',
     }, null, 2),
   },
-  { position: [250, 300], typeVersion: 1.1 },
+  { position: [256, 496], typeVersion: 1.1 },
 );
 
 // Gate: skip records that have no email — nothing useful to upsert.
@@ -145,7 +149,7 @@ const hasEmail = createNode(
     },
     options: {},
   },
-  { position: [500, 300], typeVersion: 2 },
+  { position: [480, 496], typeVersion: 2 },
 );
 
 // Query Notion for an existing contact whose Identifier matches the email.
@@ -173,7 +177,7 @@ const lookup = createNode(
     },
     options: {},
   },
-  { position: [750, 200], typeVersion: 2.2, credentials: NOTION_CREDENTIAL },
+  { position: [704, 400], typeVersion: 2.2, credentials: NOTION_CREDENTIAL },
 );
 
 // Ensure the Merge node always receives data on input 0, even when all
@@ -213,7 +217,7 @@ const markExisting = createNode(
     },
     options: {},
   },
-  { position: [950, 200], typeVersion: 3.4 },
+  { position: [928, 400], typeVersion: 3.4 },
 );
 
 // "Mark Inbound" wraps the original incoming data under `incoming` and
@@ -240,7 +244,7 @@ const markInbound = createNode(
     },
     options: {},
   },
-  { position: [950, 400], typeVersion: 3.4 },
+  { position: [928, 592], typeVersion: 3.4 },
 );
 
 // ---------------------------------------------------------------------------
@@ -258,7 +262,7 @@ const pairRecords = createNode(
     joinMode: 'keepEverything',
     options: {},
   },
-  { position: [1150, 300], typeVersion: 3 },
+  { position: [1152, 496], typeVersion: 3 },
 );
 
 // Branch: does a matching contact already exist?
@@ -291,7 +295,7 @@ const ifExists = createNode(
     },
     options: {},
   },
-  { position: [1350, 300], typeVersion: 2 },
+  { position: [1376, 496], typeVersion: 2 },
 );
 
 // ---------------------------------------------------------------------------
@@ -368,8 +372,30 @@ for (const item of $input.all()) {
   if (changed) {
     results.push({
       json: {
+        _has_update: true,
         pageId: data.notion.id,
         requestBody: JSON.stringify({ properties }),
+        _email: data.Identifier,
+      },
+    });
+  } else {
+    // No fields differ from what Notion already has — skip the HTTP PATCH but
+    // still emit a page-shaped item so the contact flows through to Return
+    // Contact (the sub-workflow's contract is "N inbound = N outbound").
+    results.push({
+      json: {
+        _has_update: false,
+        object: 'page',
+        id: data.notion.id,
+        properties: {
+          Identifier: {
+            title: [{
+              type: 'text',
+              text: { content: data.Identifier },
+              plain_text: data.Identifier,
+            }],
+          },
+        },
         _email: data.Identifier,
       },
     });
@@ -386,7 +412,36 @@ const buildUpdateBody = createNode(
     jsCode: BUILD_UPDATE_CODE,
     mode: 'runOnceForAllItems',
   },
-  { position: [1550, 200], typeVersion: 2 },
+  { position: [1600, 328], typeVersion: 2 },
+);
+
+// IF gate: only changed records hit the Notion PATCH; unchanged records skip
+// to Return Contact directly (still emitted so the sub-workflow's "N in =
+// N out" contract holds).
+const hasUpdate = createNode(
+  'Has Update?',
+  'n8n-nodes-base.if',
+  {
+    conditions: {
+      options: {
+        caseSensitive: true,
+        leftValue: '',
+        typeValidation: 'strict',
+        version: 2,
+      },
+      conditions: [
+        {
+          id: crypto.randomUUID(),
+          leftValue: '={{ $json._has_update }}',
+          rightValue: '',
+          operator: { type: 'boolean', operation: 'true', singleValue: true },
+        },
+      ],
+      combinator: 'and',
+    },
+    options: {},
+  },
+  { position: [2272, 280], typeVersion: 2.2 },
 );
 
 const update = createNode(
@@ -410,7 +465,7 @@ const update = createNode(
       batching: { batch: { batchSize: 1, batchInterval: 334 } },
     },
   },
-  { position: [1750, 200], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
+  { position: [2496, 208], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
 );
 update.retryOnFail = true;
 update.maxTries = 3;
@@ -470,7 +525,7 @@ const buildCreateBody = createNode(
     jsCode: BUILD_CREATE_CODE,
     mode: 'runOnceForAllItems',
   },
-  { position: [1550, 400], typeVersion: 2 },
+  { position: [1600, 736], typeVersion: 2 },
 );
 
 const create = createNode(
@@ -494,7 +549,7 @@ const create = createNode(
       batching: { batch: { batchSize: 1, batchInterval: 334 } },
     },
   },
-  { position: [1750, 400], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
+  { position: [2496, 784], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
 );
 create.retryOnFail = true;
 create.maxTries = 3;
@@ -529,7 +584,7 @@ const prepareLoopCheck = createNode(
     jsCode: PREPARE_LOOP_CHECK_CODE,
     mode: 'runOnceForAllItems',
   },
-  { position: [1824, 400], typeVersion: 2 },
+  { position: [1824, 568], typeVersion: 2 },
 );
 
 const loopIncr = createNode(
@@ -545,7 +600,7 @@ const loopIncr = createNode(
     jsonBody: '={{ $json.redisBody }}',
     options: {},
   },
-  { position: [2048, 400], typeVersion: 4.2, credentials: UPSTASH_CREDENTIAL },
+  { position: [2048, 568], typeVersion: 4.2, credentials: UPSTASH_CREDENTIAL },
 );
 loopIncr.onError = 'continueRegularOutput';
 
@@ -579,7 +634,7 @@ const loopThreshold = createNode(
     },
     options: {},
   },
-  { position: [2272, 400], typeVersion: 2.2 },
+  { position: [2272, 568], typeVersion: 2.2 },
 );
 
 const loopAlert = createNode(
@@ -593,28 +648,63 @@ const loopAlert = createNode(
   },
   {
     typeVersion: 1,
-    position: [2496, 400],
+    // Hand-adjusted on the server. Sits above mergeContacts (y=448) to
+    // satisfy "output 0 above output 1" for loopThreshold:
+    //   output 0 (true) → loopAlert (y=496, ABOVE-ish — actually slightly
+    //                                  below merge but on its own column)
+    //   output 1 (false) → mergeContacts (y=448)
+    position: [2496, 496],
     credentials: PUSHOVER_CREDENTIAL,
   },
 );
 
 // ---------------------------------------------------------------------------
+// Merge All Outputs — explicit synchronization point
+//
+// Merge node (append mode, 5 typed inputs) waits for every upstream branch
+// to reach a "done" state before emitting. Unlike a Code node with multiple
+// fan-ins on input 0 — which relies on n8n's implicit v1-execution-order
+// semantics — a Merge node has explicit per-input ports that the engine
+// synchronizes on. Future n8n behavior changes can't silently de-sync the
+// branches.
+//
+// Inputs (0-indexed):
+//   0 — Update Contact   (HTTP PATCH response, Notion page)
+//   1 — Has Update?      (false branch — page-shaped pass-through, no PATCH)
+//   2 — Create Contact   (HTTP POST response, Notion page)
+//   3 — Loop Threshold   (false branch — Redis INCR response, no loop)
+//   4 — Loop Alert       (Pushover response, loop detected and alerted)
+// ---------------------------------------------------------------------------
+
+const mergeContacts = createNode(
+  'Merge All Outputs',
+  'n8n-nodes-base.merge',
+  {
+    mode: 'append',
+    numberInputs: 5,
+    options: {},
+  },
+  { position: [2720, 448], typeVersion: 3 },
+);
+
+// ---------------------------------------------------------------------------
 // Return Contact — single terminal node
 //
-// All paths in the sub-workflow converge here so callers see exactly one
-// main[0] output channel. For each upserted contact (update or create),
-// emits exactly one record on the output. Side-channel responses from the
-// loop-detection chain (Redis INCR, Pushover) are filtered out.
+// For each upserted contact (update or create or no-op), emits exactly one
+// record on the output. Side-channel responses from the loop-detection
+// chain (Redis INCR, Pushover) are filtered out by the object === 'page'
+// check.
 //
 // Multi-item correctness:
 //   - The sub-workflow can receive N inbound records and must return N
 //     records on output (one per upserted contact, paired back to the
 //     correct input via pairedItem).
-//   - Update Contact emits one Notion page per update; Create Contact emits
-//     one Notion page per create. Together these account for every record
-//     that passed the Has Email? filter.
-//   - The loop chain emits Redis/Pushover responses on the same merged input
-//     stream — we drop them by checking object === 'page'.
+//   - Update Contact emits one Notion page per update; Has Update? false
+//     branch emits one page-shaped item per unchanged record; Create
+//     Contact emits one Notion page per create. Together these account
+//     for every record that passed the Has Email? filter.
+//   - The loop chain emits Redis/Pushover responses through the same Merge
+//     synchronization point — we drop them by checking object === 'page'.
 //
 // Output shape per item:
 //   { id, page_id, email, properties, notion: <full page response> }
@@ -648,7 +738,7 @@ const returnContact = createNode(
   'Return Contact',
   'n8n-nodes-base.code',
   { jsCode: RETURN_CONTACT_CODE, mode: 'runOnceForAllItems' },
-  { position: [2720, 300], typeVersion: 2 },
+  { position: [2944, 496], typeVersion: 2 },
 );
 
 // ---------------------------------------------------------------------------
@@ -658,9 +748,9 @@ const returnContact = createNode(
 export default createWorkflow('Notion Master Contact Upsert', {
   nodes: [
     trigger, hasEmail, lookup, markExisting, markInbound,
-    pairRecords, ifExists, buildUpdateBody, update, buildCreateBody, create,
+    pairRecords, ifExists, buildUpdateBody, hasUpdate, update, buildCreateBody, create,
     prepareLoopCheck, loopIncr, loopThreshold, loopAlert,
-    returnContact,
+    mergeContacts, returnContact,
   ],
   connections: [
     connect(trigger, hasEmail),
@@ -671,7 +761,8 @@ export default createWorkflow('Notion Master Contact Upsert', {
     connect(markInbound, pairRecords, 0, 1),   // incoming data → Pair Records input 1
     connect(pairRecords, ifExists),            // paired data → IF
     connect(ifExists, buildUpdateBody, 0, 0),   // true  → Build Update Body
-    connect(buildUpdateBody, update),
+    connect(buildUpdateBody, hasUpdate),       // gate: skip PATCH if nothing changed
+    connect(hasUpdate, update, 0, 0),          // _has_update = true → HTTP PATCH
     connect(ifExists, buildCreateBody, 1, 0),  // false → Build Create Body
     connect(buildCreateBody, create),          // → Create Contact (HTTP POST)
 
@@ -682,13 +773,23 @@ export default createWorkflow('Notion Master Contact Upsert', {
     connect(loopIncr, loopThreshold),
     connect(loopThreshold, loopAlert, 0, 0),       // true (>= 4 events) → Pushover alert
 
-    // Single terminal — every output path funnels through Return Contact, which
-    // filters to keep only the Notion page record so the parent receives the
-    // upserted contact on main[0].
-    connect(update, returnContact),
-    connect(create, returnContact),
-    connect(loopThreshold, returnContact, 1, 0),   // false branch (no loop) → discard
-    connect(loopAlert, returnContact),             // alert sent → discard
+    // All five output paths funnel into Merge All Outputs, which explicitly
+    // waits for every input port to reach a "done" state before emitting.
+    // Return Contact then filters to keep only the Notion page records.
+    //
+    // Input order matches the vertical position of source nodes on the
+    // canvas (top→bottom) so the convergence arcs don't cross:
+    //   0 — Update Contact   (y=208, top)
+    //   1 — Has Update? false (y=280)
+    //   2 — Loop Alert       (y=496)
+    //   3 — Loop Threshold false (y=568)
+    //   4 — Create Contact   (y=784, bottom)
+    connect(update,         mergeContacts, 0, 0),  // PATCH response (changed records)
+    connect(hasUpdate,      mergeContacts, 1, 1),  // skip-PATCH branch (unchanged records)
+    connect(loopAlert,      mergeContacts, 0, 2),  // alert sent
+    connect(loopThreshold,  mergeContacts, 1, 3),  // no loop detected
+    connect(create,         mergeContacts, 0, 4),  // POST response (new records)
+    connect(mergeContacts,  returnContact),
   ],
   tags: ['sub-workflow', 'contacts'],
 });
