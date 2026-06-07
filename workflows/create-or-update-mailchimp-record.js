@@ -9,7 +9,9 @@
  * NOTIONID Guard Logic:
  *   - Incoming page ID matches Mailchimp NOTIONID → update (authorized)
  *   - Mailchimp NOTIONID is blank → update + claim (write page ID)
- *   - Incoming page ID doesn't match → SKIP (stale/duplicate)
+ *   - Incoming page ID doesn't match → CHECK old page via Notion API:
+ *       - Archived/deleted → update + re-claim (overwrite NOTIONID)
+ *       - Still live → dropped (genuine conflict)
  *   - No page ID provided (non-Notion caller) → bypass guard entirely
  *
  * Flow:
@@ -18,7 +20,11 @@
  *     └─[Error] Service Down? → true (5xx): bypass to Find Existing Subs
  *                              → false (4xx): drop (invalid email)
  *   Find Existing Subs → Validate Lookup → Enforce Email
- *   Lowercase → NOTIONID Guard → Guard Filter → Switch
+ *   Lowercase → NOTIONID Guard → Guard Switch
+ *     ├─[Proceed] → Switch
+ *     └─[Check Stale] → Fetch Stale Page → Is Archived?
+ *                         ├─[true] → Switch (re-claim)
+ *                         └─[false] → Duplicate Error (throw)
  *     ├─[Update — merge fields] Filter Merge Fields Changed → Remove Cleaned
  *     │    → Build Update Record → Update Subscribers
  *     │       └→ If Claiming → Build Writeback URL → Write URL to Notion
@@ -68,7 +74,7 @@ const trigger = createNode(
       notion_page_id: '',
     }),
   },
-  { position: [160, -336], typeVersion: 1.1 },
+  { position: [160, -432], typeVersion: 1.1 },
 );
 
 // 2. Enforce Required Format — lowercase email, default status, extract page ID
@@ -101,7 +107,7 @@ const enforceFormat = createNode(
     includeOtherFields: true,
     options: {},
   },
-  { position: [384, -336], typeVersion: 3.4 },
+  { position: [384, -432], typeVersion: 3.4 },
 );
 
 // 2b. Validate Email — call UserCheck to verify syntax, MX, and spam status.
@@ -119,7 +125,7 @@ const validateEmail = createNode(
     options: {},
   },
   {
-    position: [608, -336],
+    position: [608, -432],
     typeVersion: 4.2,
     credentials: { httpHeaderAuth: { id: 'sGklpGDze5oWu3MF', name: 'UserCheck API' } },
   },
@@ -157,7 +163,7 @@ const emailValid = createNode(
     },
     options: {},
   },
-  { position: [832, -336], typeVersion: 2.2 },
+  { position: [832, -528], typeVersion: 2.2 },
 );
 
 // 2d. Service Down? — distinguish 400 (bad email, drop) from 5xx (outage, bypass).
@@ -188,7 +194,7 @@ const serviceDown = createNode(
     },
     options: {},
   },
-  { position: [832, -144], typeVersion: 2.2 },
+  { position: [832, -336], typeVersion: 2.2 },
 );
 
 // 3. Find Existing Subs — Mailchimp GET by email
@@ -203,7 +209,7 @@ const findExisting = createNode(
     email: "={{ $('Enforce Required Format').item.json.email_address }}",
     options: {},
   },
-  { position: [1056, -336], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
+  { position: [1056, -432], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
 );
 findExisting.retryOnFail = true;
 findExisting.maxTries = 3;
@@ -238,7 +244,7 @@ if (typeof j.error === 'string' && j.error.length > 0) {
 // No id and no error — pass through to Create branch
 return $input.item;`,
   },
-  { position: [1280, -336], typeVersion: 2 },
+  { position: [1280, -432], typeVersion: 2 },
 );
 
 // 4. Enforce Email Lowercase — normalize the lookup result email
@@ -259,7 +265,7 @@ const enforceEmailLower = createNode(
     includeOtherFields: true,
     options: {},
   },
-  { position: [1504, -336], typeVersion: 3.4 },
+  { position: [1504, -432], typeVersion: 3.4 },
 );
 
 // 5. NOTIONID Guard — Code node that compares incoming page ID with Mailchimp NOTIONID
@@ -281,44 +287,134 @@ if (!incomingId) {
   $input.item.json.guard_action = 'proceed';
   $input.item.json.should_claim = !notionId;
 } else {
-  // Mismatch — stale/duplicate source, skip
-  $input.item.json.guard_action = 'skip';
-  $input.item.json.should_claim = false;
+  // Mismatch — check if old page is archived (stale after dedup)
+  $input.item.json.guard_action = 'check_stale';
+  $input.item.json.should_claim = true;
+  $input.item.json.stale_notion_id = notionId;
 }
 
 return $input.item;`,
   },
-  { position: [1728, -336], typeVersion: 2 },
+  { position: [1728, -432], typeVersion: 2 },
 );
 
-// 6. Guard Filter — drop items where guard says skip
-const guardFilter = createNode(
-  'Guard Filter',
-  'n8n-nodes-base.filter',
+// 6. Guard Switch — route by guard_action: proceed → main flow, check_stale → Notion API check
+const guardSwitch = createNode(
+  'Guard Switch',
+  'n8n-nodes-base.switch',
+  {
+    rules: {
+      values: [
+        {
+          conditions: {
+            options: {
+              caseSensitive: true,
+              leftValue: '',
+              typeValidation: 'strict',
+              version: 2,
+            },
+            conditions: [
+              {
+                id: crypto.randomUUID(),
+                leftValue: '={{ $json.guard_action }}',
+                rightValue: 'proceed',
+                operator: { type: 'string', operation: 'equals' },
+              },
+            ],
+            combinator: 'and',
+          },
+          renameOutput: true,
+          outputKey: 'Proceed',
+        },
+        {
+          conditions: {
+            options: {
+              caseSensitive: true,
+              leftValue: '',
+              typeValidation: 'strict',
+              version: 2,
+            },
+            conditions: [
+              {
+                id: crypto.randomUUID(),
+                leftValue: '={{ $json.guard_action }}',
+                rightValue: 'check_stale',
+                operator: { type: 'string', operation: 'equals' },
+              },
+            ],
+            combinator: 'and',
+          },
+          renameOutput: true,
+          outputKey: 'Check Stale',
+        },
+      ],
+    },
+    options: {},
+  },
+  { position: [1952, -432], typeVersion: 3.2 },
+);
+
+// 6a. Fetch Stale Page — check if the old Notion page is archived/deleted
+const fetchStalePage = createNode(
+  'Fetch Stale Page',
+  'n8n-nodes-base.httpRequest',
+  {
+    method: 'GET',
+    url: '=https://api.notion.com/v1/pages/{{ $json.stale_notion_id }}',
+    authentication: 'predefinedCredentialType',
+    nodeCredentialType: 'notionApi',
+    sendHeaders: true,
+    headerParameters: {
+      parameters: [{ name: 'Notion-Version', value: '2022-06-28' }],
+    },
+    options: {},
+  },
+  { position: [2176, -360], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
+);
+fetchStalePage.onError = 'continueRegularOutput';
+
+// 6b. Is Archived? — allow re-claim if old page is archived or inaccessible
+const isArchived = createNode(
+  'Is Archived?',
+  'n8n-nodes-base.if',
   {
     conditions: {
       options: {
         caseSensitive: true,
         leftValue: '',
-        typeValidation: 'strict',
+        typeValidation: 'loose',
         version: 2,
       },
       conditions: [
         {
           id: crypto.randomUUID(),
-          leftValue: '={{ $json.guard_action }}',
-          rightValue: 'proceed',
-          operator: {
-            type: 'string',
-            operation: 'equals',
-          },
+          leftValue: '={{ $json.archived }}',
+          rightValue: '',
+          operator: { type: 'boolean', operation: 'true' },
+        },
+        {
+          id: crypto.randomUUID(),
+          leftValue: '={{ $json.error }}',
+          rightValue: '',
+          operator: { type: 'string', operation: 'exists', singleValue: true },
         },
       ],
-      combinator: 'and',
+      combinator: 'or',
     },
     options: {},
   },
-  { position: [1952, -336], typeVersion: 2.2 },
+  { position: [2400, -360], typeVersion: 2.2 },
+);
+
+// 6c. Duplicate Error — old page is still live, so two Notion contacts share one email
+const duplicateError = createNode(
+  'Duplicate Error',
+  'n8n-nodes-base.stopAndError',
+  {
+    errorType: 'errorMessage',
+    errorMessage: `=NOTIONID conflict for {{ $('Enforce Required Format').item.json.email_address || '(unknown)' }}: Mailchimp record is owned by Notion page {{ $('NOTIONID Guard').item.json.stale_notion_id || '' }} (still live), but incoming update is from page {{ $('Enforce Required Format').item.json.notion_page_id || '' }}. This likely means a duplicate Notion contact exists and needs to be merged.`,
+  },
+  { position: [2624, -336], typeVersion: 1 },
 );
 
 // 7. Switch — existing member (Update) vs new member (Create)
@@ -382,7 +478,7 @@ const switchNode = createNode(
     },
     options: {},
   },
-  { position: [2176, -336], typeVersion: 3.2 },
+  { position: [2624, -528], typeVersion: 3.2 },
 );
 
 // ---------------------------------------------------------------------------
@@ -439,7 +535,7 @@ const filterMergeFields = createNode(
     },
     options: {},
   },
-  { position: [2400, -720], typeVersion: 2.2 },
+  { position: [2848, -720], typeVersion: 2.2 },
 );
 
 // 8b. Filter: Tags Changed — only update tags when incoming has tags NOT already
@@ -468,7 +564,7 @@ const filterTagsChanged = createNode(
     },
     options: {},
   },
-  { position: [2400, -528], typeVersion: 2.2 },
+  { position: [2848, -528], typeVersion: 2.2 },
 );
 
 // 9. Remove Cleaned Entries — skip if Mailchimp status is "cleaned"
@@ -495,7 +591,7 @@ const removeCleaned = createNode(
     },
     options: {},
   },
-  { position: [2624, -720], typeVersion: 2.2 },
+  { position: [3072, -720], typeVersion: 2.2 },
 );
 
 // 10. Build Update Record — merge incoming data with existing, include NOTIONID
@@ -563,7 +659,7 @@ const buildUpdate = createNode(
     },
     options: {},
   },
-  { position: [2848, -720], typeVersion: 3.4 },
+  { position: [3296, -720], typeVersion: 3.4 },
 );
 
 // 11. Update Subscribers — Mailchimp update with NOTIONID in merge fields
@@ -587,7 +683,7 @@ const updateSubs = createNode(
       status: '={{ $json.status }}',
     },
   },
-  { position: [3072, -720], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
+  { position: [3520, -720], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
 );
 updateSubs.retryOnFail = true;
 updateSubs.maxTries = 3;
@@ -618,7 +714,7 @@ oldTags.forEach(obj => {
 $input.item.json.updatedTags = updatedTags;
 return $input.item;`,
   },
-  { position: [2624, -528], typeVersion: 2 },
+  { position: [3072, -528], typeVersion: 2 },
 );
 
 // 13. Record Tags — POST tag updates to Mailchimp API
@@ -642,7 +738,7 @@ const recordTags = createNode(
       },
     },
   },
-  { position: [2848, -528], typeVersion: 4.3, credentials: MAILCHIMP_CREDENTIAL },
+  { position: [3296, -528], typeVersion: 4.3, credentials: MAILCHIMP_CREDENTIAL },
 );
 recordTags.retryOnFail = true;
 recordTags.waitBetweenTries = 2000;
@@ -673,7 +769,7 @@ const insertNew = createNode(
       ],
     },
   },
-  { position: [2400, -240], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
+  { position: [2848, -336], typeVersion: 1, credentials: MAILCHIMP_CREDENTIAL },
 );
 insertNew.retryOnFail = true;
 insertNew.maxTries = 3;
@@ -718,7 +814,7 @@ const claimFilterUpdate = createNode(
   'If Claiming',
   'n8n-nodes-base.filter',
   { conditions: shouldClaimConditions(), options: {} },
-  { position: [3296, -720], typeVersion: 2.2 },
+  { position: [3744, -720], typeVersion: 2.2 },
 );
 
 // Set node: extract web_id + data center from Mailchimp response, build admin URL
@@ -746,7 +842,7 @@ const buildWritebackUpdate = createNode(
     includeOtherFields: false,
     options: {},
   },
-  { position: [3520, -720], typeVersion: 3.4 },
+  { position: [3968, -720], typeVersion: 3.4 },
 );
 
 const writeUrlUpdate = createNode(
@@ -768,7 +864,7 @@ const writeUrlUpdate = createNode(
       batching: { batch: { batchSize: 1, batchInterval: 334 } },
     },
   },
-  { position: [3744, -720], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
+  { position: [4192, -720], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
 );
 writeUrlUpdate.retryOnFail = true;
 writeUrlUpdate.maxTries = 3;
@@ -780,7 +876,7 @@ const claimFilterCreate = createNode(
   'If Claiming (New)',
   'n8n-nodes-base.filter',
   { conditions: shouldClaimConditions(), options: {} },
-  { position: [2624, -144], typeVersion: 2.2 },
+  { position: [3072, -336], typeVersion: 2.2 },
 );
 
 // Create path: Mailchimp response is nested under $json.mailchimp
@@ -807,7 +903,7 @@ const buildWritebackCreate = createNode(
     includeOtherFields: false,
     options: {},
   },
-  { position: [2848, -144], typeVersion: 3.4 },
+  { position: [3296, -336], typeVersion: 3.4 },
 );
 
 const writeUrlCreate = createNode(
@@ -829,7 +925,7 @@ const writeUrlCreate = createNode(
       batching: { batch: { batchSize: 1, batchInterval: 334 } },
     },
   },
-  { position: [3072, -144], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
+  { position: [3520, -336], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
 );
 writeUrlCreate.retryOnFail = true;
 writeUrlCreate.maxTries = 3;
@@ -843,7 +939,9 @@ export default createWorkflow('Create or Update Mailchimp Record', {
   nodes: [
     trigger, enforceFormat, validateEmail, emailValid, serviceDown,
     findExisting, validateLookup, enforceEmailLower,
-    notionIdGuard, guardFilter, switchNode,
+    notionIdGuard, guardSwitch, switchNode,
+    // Stale NOTIONID check path
+    fetchStalePage, isArchived, duplicateError,
     // Update branch — merge fields path
     filterMergeFields, removeCleaned, buildUpdate, updateSubs,
     // Update branch — tags path
@@ -867,8 +965,12 @@ export default createWorkflow('Create or Update Mailchimp Record', {
     connect(findExisting, validateLookup),
     connect(validateLookup, enforceEmailLower),
     connect(enforceEmailLower, notionIdGuard),
-    connect(notionIdGuard, guardFilter),
-    connect(guardFilter, switchNode),
+    connect(notionIdGuard, guardSwitch),
+    connect(guardSwitch, switchNode, 0),           // Proceed → Switch
+    connect(guardSwitch, fetchStalePage, 1),       // Check Stale → Notion API check
+    connect(fetchStalePage, isArchived),
+    connect(isArchived, switchNode, 0, 0),         // Archived/error → re-enter main flow
+    connect(isArchived, duplicateError, 1, 0),     // Still live → throw duplicate error
     // Switch output 0 (Update) → two independent paths
     connect(switchNode, filterMergeFields, 0),
     connect(switchNode, filterTagsChanged, 0),

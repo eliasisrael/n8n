@@ -11,9 +11,13 @@
  *   7. Outputs a detailed report of all actions taken
  *
  * Destination selection:
- *   - Oldest by created_time
+ *   - Prefer a record that has a Mailchimp Profile URL (indicates an active
+ *     Mailchimp ↔ Notion NOTIONID link that must not be broken)
+ *   - Among equally-linked (or equally-unlinked) records: oldest by created_time
  *
  * Field merging:
+ *   - Mailchimp-linked fields (Mailchimp Profile URL): destination's value is always
+ *     preserved to protect the NOTIONID link. Source values are discarded.
  *   - For unitary values (strings, dates, etc.): newest record's non-null value wins
  *   - If only one record has a value, it's used regardless of age
  *   - Tags (multi_select) = set union across all records
@@ -68,6 +72,7 @@ const FIELD_MAP_JSON = JSON.stringify({
   postal_code:      { prop: 'Postal Code',      notionKey: 'property_postal_code',      apiType: 'rich_text' },
   country:          { prop: 'Country',          notionKey: 'property_country',          apiType: 'rich_text' },
   phone:            { prop: 'Phone',            notionKey: 'property_phone',            apiType: 'phone_number' },
+  mailchimp_profile:{ prop: 'Mailchimp Profile',notionKey: 'property_mailchimp_profile',apiType: 'url', destWins: true },
 });
 
 // ---------------------------------------------------------------------------
@@ -143,6 +148,7 @@ for (const item of allItems) {
     url: j.url,
     created_time: j.property_created_time,
     email: (j.property_email || j.property_identifier || '').toString().trim().toLowerCase(),
+    mailchimp_profile: j.property_mailchimp_profile || null,
   };
 
   // Standard fields
@@ -175,8 +181,14 @@ const allSourceIds = [];
 for (const [email, records] of byEmail) {
   if (records.length < 2) continue;
 
-  // Destination = oldest by created_time
-  records.sort((a, b) => new Date(a.created_time) - new Date(b.created_time));
+  // Destination = prefer record with Mailchimp Profile URL (active NOTIONID link),
+  // then oldest by created_time as tiebreaker
+  records.sort((a, b) => {
+    const aHasMc = a.mailchimp_profile ? 1 : 0;
+    const bHasMc = b.mailchimp_profile ? 1 : 0;
+    if (bHasMc !== aHasMc) return bHasMc - aHasMc; // linked record first
+    return new Date(a.created_time) - new Date(b.created_time); // oldest first
+  });
   const dest = records[0];
   const sources = records.slice(1);
 
@@ -237,6 +249,7 @@ function toNotionProp(apiType, value) {
     case 'phone_number': return { phone_number: String(value) };
     case 'select':       return { select: { name: String(value) } };
     case 'multi_select': return { multi_select: (Array.isArray(value) ? value : [value]).map(v => ({ name: String(v) })) };
+    case 'url':          return { url: String(value) };
     default: throw new Error('Unknown apiType: ' + apiType);
   }
 }
@@ -285,6 +298,13 @@ for (let groupIdx = 0; groupIdx < plan.groups.length; groupIdx++) {
         mergedProps[mapping.prop] = toNotionProp('multi_select', [...allTags]);
         const destTags = new Set(Array.isArray(destVal) ? destVal.map(String) : []);
         if (allTags.size > destTags.size) fieldsMerged.push(key);
+      }
+    } else if (mapping.destWins) {
+      // Destination-wins fields (e.g., Mailchimp Profile): preserve dest value
+      // to protect the NOTIONID link between Notion and Mailchimp
+      const destVal = dest[mapping.notionKey];
+      if (hasValue(destVal)) {
+        mergedProps[mapping.prop] = toNotionProp(mapping.apiType, destVal);
       }
     } else {
       // Unitary fields: newest record's non-null value wins

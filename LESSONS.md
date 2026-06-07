@@ -91,7 +91,7 @@ All three pipelines (Sales, Partner, Comms) have a Priority field, but the Sales
 |---|---|---|
 | `page.properties_updated` | Matches incoming page ID | Update Mailchimp record |
 | `page.properties_updated` | Blank / missing | Update Mailchimp **and write** incoming page ID into `NOTIONID` (claim) |
-| `page.properties_updated` | Set but doesn't match | **Skip** (stale/duplicate source) |
+| `page.properties_updated` | Set but doesn't match | **Check stale**: fetch old page via Notion API — if archived/deleted, update + re-claim; if still live, skip |
 | `page.deleted` | Matches incoming page ID | **Archive** the Mailchimp member (canonical contact was deleted) — *not yet implemented* |
 | `page.deleted` | Doesn't match or blank | **Skip** (duplicate was deleted, not the canonical) — *not yet implemented* |
 
@@ -106,7 +106,7 @@ All three pipelines (Sales, Partner, Comms) have a Priority field, but the Sales
 
 **Edge cases**:
 - *New Mailchimp member from signup form (no Notion record yet)*: NOTIONID stays blank until a Notion contact with the same email triggers a webhook, which then claims it.
-- *Notion record deleted and recreated*: New page ID won't match. Guard could check if the page referenced by NOTIONID is archived/deleted (GET `/pages/{id}`, check `archived: true`); if so, allow the new page to re-claim. Not yet implemented.
+- *Notion record deleted and recreated (or dedup merge)*: New page ID won't match. Guard fetches the page referenced by NOTIONID (`GET /pages/{id}`); if `archived: true` or the API returns an error (deleted/inaccessible), the new page re-claims the Mailchimp record. Implemented April 2026.
 - *Two Notion duplicates fire webhooks before merge runs*: First one claims. Second is blocked. Running the merge workflow resolves the underlying duplicate.
 
 **Mailchimp Profile URL write-back**: When the NOTIONID guard claims a subscriber (blank NOTIONID), the Mailchimp sub-workflow writes the Mailchimp admin profile URL back to the Notion contact's "Mailchimp Profile" url property. The URL is also written during the initial Notion upsert when a Mailchimp webhook fires — the Mailchimp Audience Hook extracts `web_id` from the payload and passes `mailchimp_profile` to the upsert sub-workflow. The DC (`MAILCHIMP_DC` in `.env`) is used to construct the URL.
@@ -117,6 +117,17 @@ All three pipelines (Sales, Partner, Comms) have a Priority field, but the Sales
 - `Mailchimp Audience Hook` — `workflows/mailchimp-audience-hook.js` (passes `mailchimp_profile` URL to upsert)
 - `Notion Master Contact Upsert` — `workflows/upsert-contact.js` (writes `mailchimp_profile` to Notion)
 - `Adapter: Contacts` — `workflows/adapter-contacts.js` (already passes `id` in field mappings)
+
+### Merge Duplicate Contacts: destination selection must protect Mailchimp links
+
+**Problem**: When merging duplicate contacts, the original strategy selected the oldest record (by `created_time`) as the destination. But if a newer record had already been claimed by Mailchimp (has a `Mailchimp Profile` URL and a matching `NOTIONID` in Mailchimp), archiving it would break the Mailchimp ↔ Notion link. The NOTIONID Guard's stale-check can recover from this, but it's better to avoid breaking the link in the first place.
+
+**Solution** (April 2026): Destination selection now prefers records that have a `Mailchimp Profile` URL (indicating an active NOTIONID link). Among equally-linked or equally-unlinked records, oldest `created_time` wins as a tiebreaker. Additionally, `destWins: true` fields (currently just `Mailchimp Profile`) always preserve the destination's value during field merging — source record values for those fields are discarded.
+
+**Implementation**: In `workflows/merge-duplicate-contacts.js`:
+- `Find Duplicates` node: parses `property_mailchimp_profile`, sorts by Mailchimp link presence then `created_time`
+- `Build Merge Plan` node: `FIELD_MAP` entry for `mailchimp_profile` has `destWins: true`, which skips the "newest non-null wins" logic and always keeps the destination's value
+- `toNotionProp()` helper: added `url` case for the `Mailchimp Profile` property type
 
 ### `page.deleted` events in the Notion Webhook Router — broader implications
 
