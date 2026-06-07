@@ -60,7 +60,7 @@ const listFolder = createNode(
     path: DROPBOX_FOLDER,
     filters: {},
   },
-  { position: [200, 0], typeVersion: 1, credentials: DROPBOX_CREDENTIAL },
+  { position: [208, 0], typeVersion: 1, credentials: DROPBOX_CREDENTIAL },
 );
 listFolder.retryOnFail = true;
 
@@ -107,7 +107,7 @@ const sortByDate = createNode(
     },
     options: {},
   },
-  { position: [600, 0], typeVersion: 1 },
+  { position: [608, 0], typeVersion: 1 },
 );
 
 const takeMostRecent = createNode(
@@ -129,7 +129,7 @@ const downloadCsv = createNode(
     operation: 'download',
     path: '={{ $json.pathLower }}',
   },
-  { position: [1000, 0], typeVersion: 1, credentials: DROPBOX_CREDENTIAL },
+  { position: [1008, 0], typeVersion: 1, credentials: DROPBOX_CREDENTIAL },
 );
 downloadCsv.retryOnFail = true;
 
@@ -172,7 +172,7 @@ const hasEmail = createNode(
     },
     options: {},
   },
-  { position: [1400, 0], typeVersion: 2.2 },
+  { position: [1408, 0], typeVersion: 2.2 },
 );
 hasEmail.alwaysOutputData = true;
 
@@ -230,8 +230,15 @@ return {
   },
 };`,
   },
-  { position: [1800, -100], typeVersion: 2 },
+  { position: [1808, -96], typeVersion: 2 },
 );
+
+function schemaField(id, type = 'string', removed = false) {
+  return {
+    id, displayName: id, required: false, defaultMatch: false,
+    display: true, canBeUsedToMatch: true, type, ...(removed ? { removed: true } : {}),
+  };
+}
 
 const upsertContact = createNode(
   'Upsert Contact',
@@ -242,9 +249,37 @@ const upsertContact = createNode(
       value: UPSERT_WORKFLOW_ID,
       mode: 'id',
     },
+    workflowInputs: {
+      mappingMode: 'defineBelow',
+      value: {
+        email: '={{ $json.email }}',
+        first_name: '={{ $json.first_name }}',
+        last_name: '={{ $json.last_name }}',
+        tags: '={{ $json.tags }}',
+        email_marketing: '={{ $json.email_marketing }}',
+      },
+      matchingColumns: [],
+      schema: [
+        schemaField('email'),
+        schemaField('first_name'),
+        schemaField('last_name'),
+        schemaField('company', 'string', true),
+        schemaField('email_marketing'),
+        schemaField('tags', 'array'),
+        schemaField('street_address', 'string', true),
+        schemaField('street_address_2', 'string', true),
+        schemaField('city', 'string', true),
+        schemaField('state', 'string', true),
+        schemaField('postal_code', 'string', true),
+        schemaField('country', 'string', true),
+        schemaField('phone', 'string', true),
+      ],
+      attemptToConvertTypes: false,
+      convertFieldsToString: true,
+    },
     options: {},
   },
-  { position: [2000, -100], typeVersion: 1.2 },
+  { position: [2000, -96], typeVersion: 1.2 },
 );
 upsertContact.alwaysOutputData = true;
 
@@ -254,10 +289,8 @@ upsertContact.alwaysOutputData = true;
 const merge = createNode(
   'Merge',
   'n8n-nodes-base.merge',
-  {
-    mode: 'chooseBranch',
-  },
-  { position: [2200, 0], typeVersion: 3 },
+  {},
+  { position: [2208, 0], typeVersion: 3 },
 );
 merge.alwaysOutputData = true;
 
@@ -290,7 +323,7 @@ const moveToProcessed = createNode(
     path: '={{ $json.sourcePath }}',
     toPath: '={{ $json.destinationPath }}',
   },
-  { position: [2600, 0], typeVersion: 1, credentials: DROPBOX_CREDENTIAL },
+  { position: [2608, 0], typeVersion: 1, credentials: DROPBOX_CREDENTIAL },
 );
 moveToProcessed.retryOnFail = true;
 
@@ -326,6 +359,7 @@ export default createWorkflow('Ingest Substack Subscribers', {
   ],
   settings: {
     errorWorkflow: 'EZTb8m4htw60nP0b',
+    callerPolicy: 'workflowsFromSameOwner',
   },
   tags: ['website', 'Production'],
 });
