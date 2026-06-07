@@ -8,3 +8,8 @@ samples/
 *.csv
 router-backup.json
 Notion Master Contact Upsert.json
+
+# Local planning notes and ad-hoc test scripts
+CRM-improvements.md
+plan-*.md
+test-*.sh
