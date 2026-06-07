@@ -545,10 +545,13 @@ for (const item of $input.all()) {
       : [];
 
   // Build the Activity creation body
+  const today = new Date().toISOString().slice(0, 10);
+  const dealKeyDetail = dealName.split(/\s+/).slice(0, 3).join(' ');
+  const outcomeActivityName = (outcomeType + ' · ' + today + ' · ' + dealKeyDetail).substring(0, 100);
   const activityBody = {
     parent: { database_id: ACTIVITIES_DB_ID },
     properties: {
-      Name:    { title: [{ text: { content: \`\${outcomeType}: \${dealName}\` } }] },
+      Name:    { title: [{ text: { content: outcomeActivityName } }] },
       Type:    { select: { name: outcomeType } },
       Date:    { date: { start: new Date().toISOString() } },
       Preview: { rich_text: [{ text: { content: preview } }] },

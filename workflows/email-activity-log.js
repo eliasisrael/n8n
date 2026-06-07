@@ -154,6 +154,22 @@ for (const a of activitiesList) {
   if (msgId) existingMessageIds.add(msgId);
 }
 
+// --- Helpers for building a unique activity name ---
+function formatEmailDatetime(isoStr) {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  const date = d.toISOString().slice(0, 10);
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  return date + ' ' + hh + ':' + mm;
+}
+
+function subjectKeyDetail(subject) {
+  const clean = (subject || '').replace(/^(Re|Fwd?|FW|AW|TR):\\s*/i, '').trim();
+  const words = clean.split(/\\s+/).filter(Boolean).slice(0, 3);
+  return words.join(' ') || '(no subject)';
+}
+
 // --- Match emails to contacts, build Notion create bodies ---
 const newActivities = [];
 
@@ -191,9 +207,14 @@ for (const email of emails) {
 
   if (!matchedContact) continue;
 
+  const emailType = email._direction === 'sent' ? 'Email Sent' : 'Email Received';
+  const emailDateStr = formatEmailDatetime(email._date);
+  const emailKeyDetail = subjectKeyDetail(email._subject);
+  const emailActivityName = (emailType + ' · ' + emailDateStr + ' · ' + emailKeyDetail).substring(0, 100);
+
   const properties = {
     'Name': {
-      title: [{ text: { content: (email._subject || '(no subject)').substring(0, 100) } }],
+      title: [{ text: { content: emailActivityName } }],
     },
     'Contact': {
       relation: [{ id: matchedContact.pageId }],

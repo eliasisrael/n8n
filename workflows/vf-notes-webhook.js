@@ -223,6 +223,9 @@ for (const seg of richTextSegments) {
 
 // Activity date: use the VF Note's last_edited_time
 const date = record.property_last_edited_time || new Date().toISOString();
+const dateStr = date.slice(0, 10);
+const noteKeyDetail = name.split(/\\s+/).slice(0, 3).join(' ') || 'note';
+const activityName = ('Account Note · ' + dateStr + ' · ' + noteKeyDetail).substring(0, 100);
 
 // Relation fields: simplified Notion output gives arrays of page IDs
 const salesIds = (record.property_sales_pipeline || []).map(id => ({ id }));
@@ -230,7 +233,7 @@ const partnerIds = (record.property_partner_pipeline || []).map(id => ({ id }));
 
 const properties = {
   'Name': {
-    title: [{ text: { content: name.substring(0, 100) } }],
+    title: [{ text: { content: activityName } }],
   },
   'Type': {
     select: { name: 'Account Note' },
