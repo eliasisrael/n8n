@@ -12,3 +12,5 @@ QSTASH_NEXT_SIGNING_KEY=op://Personal/N8N Workflows/QSTASH_NEXT_SIGNING_KEY
 MAILCHIMP_DC=op://Personal/N8N Workflows/MAILCHIMP_DC
 NOTION_WEBHOOK_SECRET=op://Personal/N8N Workflows/NOTION_WEBHOOK_SECRET
 MANDRILL_API_KEY=op://Personal/N8N Workflows/MANDRILL_API_KEY
+# TODO: create this field in 1Password (long random string) before pushing email-graph-webhook + email-subscription-manager.
+GRAPH_WEBHOOK_CLIENT_STATE=op://Personal/N8N Workflows/GRAPH_WEBHOOK_CLIENT_STATE

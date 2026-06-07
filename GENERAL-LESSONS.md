@@ -626,6 +626,65 @@ The Sort node's parameter structure requires a `sortFieldsUi` wrapper around the
 
 ---
 
+## Webhook Node Registration
+
+### `webhookId` must be set after `createNode()` — opts don't pass it through
+The `createNode()` helper in `lib/workflow.js` only forwards a specific allowlist of opt keys (id, typeVersion, position, credentials, disabled, notesInFlow, notes). It does **not** forward `webhookId`, so passing it inside `opts` is silently dropped. The built workflow JSON ends up with no `webhookId` on the webhook node, the n8n server stores it as `null`, and when you activate the workflow the production webhook is **never registered** — every request to its URL returns 404 with `The requested webhook "POST <path>" is not registered`.
+
+Workaround (established pattern, see `mailchimp-audience-hook.js`, `lead-created.js`, `product-created.js`):
+
+```js
+const webhook = createNode('Webhook', 'n8n-nodes-base.webhook', { path: 'my-hook', /* ... */ }, { position: [...], typeVersion: 2 });
+webhook.webhookId = 'my-hook';  // or a UUID — must match if you change `path`
+```
+
+`webhookId` can be the same string as `path` (the adapter workflows all do this), or a UUID. They just need to be present and consistent. After fixing, deactivate → re-push → re-activate the workflow so n8n's webhook registry picks up the change.
+
+---
+
+## Microsoft Graph Webhooks
+
+### Subscription validation handshake
+When Microsoft Graph creates or renews a webhook subscription, it sends a POST to the notification URL with a `?validationToken=<token>` query parameter and expects the URL-decoded token echoed back as `text/plain` (status 200) within 10 seconds. Without this echo, the subscription is rejected.
+
+In an n8n webhook receiver, gate this with an IF as the very first check after the webhook node — `$json.query.validationToken notEmpty`. The true branch points at a Respond to Webhook node configured with `respondWith: 'text'`, `responseBody: '={{ $json.query.validationToken }}'`, and a `Content-Type: text/plain` response header. The false branch carries on into normal notification processing.
+
+### Mailbox subscription resource paths and expiry
+Microsoft Graph mailbox subscriptions:
+- `resource: "me/mailFolders('inbox')/messages"` — receives changes in the inbox
+- `resource: "me/mailFolders('sentItems')/messages"` — receives changes in sent items
+- Single quotes around folder names are required (OData literal syntax)
+- Max expiration is 4230 minutes (~70 hours); set ~60h on creation and renew daily for comfortable overlap
+- `changeType: "created"` covers the new-email case; other types (`updated`, `deleted`) are also available
+
+Required Graph permissions for the OAuth2 credential: `Mail.Read` for fetching message bodies, and the same scope is sufficient for creating subscriptions on the user's own mailbox (no additional `Mail.ReadWrite` needed for `Subscriptions` operations on `/me/...`).
+
+### Direction routing via clientState
+When you need a single webhook endpoint to serve multiple subscriptions and tell them apart, encode the distinguishing data in `clientState`. Pattern: `<shared-secret>-<label>` (e.g. `<secret>-inbox`, `<secret>-sent`). The receiver validates the secret prefix against an env var and reads the suffix as routing metadata. Avoids a separate folder-ID lookup per notification.
+
+### Notification payload shape
+Graph batches multiple change notifications into one POST:
+```json
+{
+  "value": [
+    {
+      "subscriptionId": "...",
+      "changeType": "created",
+      "resource": "Users/{userId}/Messages/{messageId}",
+      "resourceData": { "id": "{messageId}", "@odata.type": "...", "@odata.id": "...", "@odata.etag": "..." },
+      "clientState": "...",
+      "tenantId": "..."
+    }
+  ]
+}
+```
+A Code node should iterate `value[]` and emit one downstream item per notification (with `runOnceForAllItems`, return an array of `{ json: ... }`).
+
+### Respond-202-then-process pattern
+Graph requires a response within 30 seconds and rejects subscriptions whose endpoints exceed that. To process notifications without timing out: place a `Respond to Webhook` node with status 202 IMMEDIATELY after the clientState validation, then continue the workflow chain downstream of it. n8n keeps executing after a Respond node fires, so the response goes out fast while the long work (Notion lookups, LLM calls, etc.) continues asynchronously.
+
+---
+
 ## Mailchimp Integration
 
 ### Mailchimp audience webhooks use form-encoded POST, not JSON
