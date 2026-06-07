@@ -19,4 +19,7 @@ export default createAdapter({
     { name: 'Site', value: '={{ $json.property_site }}' },
     { name: 'Master contacts', value: '={{ $json.property_master_contacts }}', type: 'array' },
   ],
+  noticeEvents: [
+    { type: 'data_source.schema_updated', message: 'Clients database schema was changed in Notion. Review the schema and update workflows if needed.' },
+  ],
 });

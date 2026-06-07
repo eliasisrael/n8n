@@ -8,4 +8,7 @@ export default createAdapter({
   targets: [
     { name: 'Execute Activity Webhook', workflowId: 'jtVgZQQrZpfUf7IR' },
   ],
+  noticeEvents: [
+    { type: 'data_source.schema_updated', message: 'Activities database schema was changed in Notion. Review the schema and update workflows if needed.' },
+  ],
 });

@@ -25,4 +25,7 @@ export default createAdapter({
     { name: "You'll Learn (Benefit 3)", value: '={{ $json.property_you_ll_learn_benefit_3 }}' },
     { name: 'LMS_ID', value: '={{ $json.property_thinkific_id }}' },
   ],
+  noticeEvents: [
+    { type: 'data_source.schema_updated', message: 'Products database schema was changed in Notion. Review the schema and update workflows if needed.' },
+  ],
 });

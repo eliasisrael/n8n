@@ -17,4 +17,7 @@ export default createAdapter({
     { name: 'Site', value: '={{ $json.property_site }}' },
     { name: 'Start date', value: '={{ $json.property_start_date }}', type: 'object' },
   ],
+  noticeEvents: [
+    { type: 'data_source.schema_updated', message: 'Partners database schema was changed in Notion. Review the schema and update workflows if needed.' },
+  ],
 });

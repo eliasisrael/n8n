@@ -57,4 +57,7 @@ export default createAdapter({
     { name: 'final', value: '={{ $json.property_final }}', type: 'boolean' },
     { name: 'spotlight', value: '={{ $json.property_spotlight }}', type: 'boolean' },
   ],
+  noticeEvents: [
+    { type: 'data_source.schema_updated', message: 'Book Endorsements database schema was changed in Notion. Review the schema and update workflows if needed.' },
+  ],
 });

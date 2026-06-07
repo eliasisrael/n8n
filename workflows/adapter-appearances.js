@@ -30,4 +30,7 @@ export default createAdapter({
     { name: 'Name', value: '={{ $json.property_name }}' },
     { name: 'Event image', value: '={{ $json.property_event_image }}', type: 'array' },
   ],
+  noticeEvents: [
+    { type: 'data_source.schema_updated', message: 'Appearances database schema was changed in Notion. Review the schema and update workflows if needed.' },
+  ],
 });

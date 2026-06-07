@@ -21,4 +21,7 @@ export default createAdapter({
     { name: 'Payment terms', value: '={{ $json.property_payment_terms }}' },
     { name: 'Cycle length', value: '={{ $json.property_cycle_length }}' },
   ],
+  noticeEvents: [
+    { type: 'data_source.schema_updated', message: 'Engagements database schema was changed in Notion. Review the schema and update workflows if needed.' },
+  ],
 });

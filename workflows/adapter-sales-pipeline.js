@@ -24,4 +24,7 @@ export default createAdapter({
     { name: 'Execute Close Stale Task', workflowId: 'EIkTeuoWsQ6fAgNO', workflowInputs: BODY_RECORD_INPUTS },
     { name: 'Execute Stage Entry Tasks', workflowId: 'MXmnk2bPGxMn8ROL', workflowInputs: BODY_RECORD_INPUTS },
   ],
+  noticeEvents: [
+    { type: 'data_source.schema_updated', message: 'Sales Pipeline database schema was changed in Notion. Review the schema and update workflows if needed.' },
+  ],
 });

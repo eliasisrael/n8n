@@ -13,4 +13,7 @@ export default createAdapter({
     { name: 'Execute Stage Entry Tasks', workflowId: 'MXmnk2bPGxMn8ROL' },
   ],
   // No fieldMappings — uses default { body, record } format for CST/SET
+  noticeEvents: [
+    { type: 'data_source.schema_updated', message: 'Comms Pipeline database schema was changed in Notion. Review the schema and update workflows if needed.' },
+  ],
 });

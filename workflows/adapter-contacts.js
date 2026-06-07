@@ -27,4 +27,7 @@ export default createAdapter({
     { name: 'Identifier', value: '={{ $json.property_identifier }}' },
     { name: 'Tags', value: '={{ $json.property_tags }}', type: 'array' },
   ],
+  noticeEvents: [
+    { type: 'data_source.schema_updated', message: 'Contacts database schema was changed in Notion. Review the schema and update workflows if needed.' },
+  ],
 });

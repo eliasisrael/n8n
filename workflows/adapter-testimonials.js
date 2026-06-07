@@ -22,4 +22,7 @@ export default createAdapter({
     { name: 'Testimonial', value: '={{ $json.property_testimonial }}' },
     { name: 'Testimonial record', value: '={{ $json.property_testimonial_record }}' },
   ],
+  noticeEvents: [
+    { type: 'data_source.schema_updated', message: 'Testimonials database schema was changed in Notion. Review the schema and update workflows if needed.' },
+  ],
 });

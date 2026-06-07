@@ -8,4 +8,7 @@ export default createAdapter({
   targets: [
     { name: 'Execute VF Notes Webhook', workflowId: '2A5i4HBS7UzZ1VwY' },
   ],
+  noticeEvents: [
+    { type: 'data_source.schema_updated', message: 'VF Notes database schema was changed in Notion. Review the schema and update workflows if needed.' },
+  ],
 });
