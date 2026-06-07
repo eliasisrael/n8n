@@ -40,6 +40,7 @@ When placing nodes programmatically (via the API or in workflow JS files), follo
 - **Same-chain nodes share a y-coordinate.** Keep horizontally connected nodes on the same row to maintain visual alignment.
 - **Parallel branches need y-separation.** When a node forks into multiple paths (e.g., IF true/false, or a node with multiple outputs), offset each branch vertically by at least **200px** so nodes and connection arcs don't overlap. Example: a backup branch at y=100 and an execution branch at y=400.
 - **Sticky notes go above the relevant node.** Position the sticky ~240px above (lower y value) with its x roughly aligned to the node it annotates. Use `color: 4` (yellow) for warnings/explanations. Typical size: 340×170.
+- **n8n canvas grid snapping**: The n8n UI snaps nodes to a grid that does NOT align with 224px. When a user adjusts layout by hand, positions will land on different values (commonly alternating 192/208px gaps). Always pull the server version and match its exact positions rather than "fixing" hand-adjusted positions back to 224px. When generating new workflows from scratch, use 224px; when matching an existing server layout, use the server's values.
 
 ---
 
@@ -94,6 +95,17 @@ Required structure:
 ```
 
 The `schema` array must list every field the sub-workflow expects, with matching `id`/`displayName`. The `value` object maps each schema field to an expression that reads from the current item's JSON. Field names in `value` must match the schema `id` values exactly (including typos in legacy schemas).
+
+### Expression values must start with `=` prefix
+Both `leftValue` and `rightValue` in condition nodes (IF, Filter, Switch) must start with `=` when they contain expressions. Without the `=`, n8n treats the entire string as a literal — `'{{ Date.now() }}'` becomes the raw string `"{{ Date.now() }}"` instead of evaluating the expression. Always use `'={{ ... }}'`.
+
+### Use dateTime operators for date comparisons, not number comparisons
+Don't convert dates to epoch milliseconds and compare as numbers — n8n's type conversion can fail on expressions in `rightValue`. Instead, use the native `dateTime` operator type with operations like `after`, `before`, `afterOrEquals`, `beforeOrEquals`. Use `new Date($now)` for the current time and `new Date("ISO-string")` for fixed dates. Example:
+```js
+leftValue: '={{ new Date($now) }}',
+rightValue: '={{ new Date("2026-04-23T00:00:00Z") }}',
+operator: { type: 'dateTime', operation: 'afterOrEquals' },
+```
 
 ### Filter & IF node (v2) condition structure
 - `conditions.options` **must** include `typeValidation: 'strict'` — without it, conditions may not render after import
@@ -509,6 +521,9 @@ Accepted node-level fields: `id`, `name`, `type`, `typeVersion`, `position`, `pa
 
 Rejected: `active` (use activate/deactivate endpoints), `staticData`, `meta`, `pinData`, `tags`, `versionId`, and node-level `settings`.
 
+### Workflow-level settings: include `callerPolicy`
+Always include `callerPolicy: 'workflowsFromSameOwner'` in workflow settings alongside `errorWorkflow`. This restricts which workflows can call this one via Execute Workflow nodes. Without it, the default may allow any workflow to call it, which is a security concern on shared instances.
+
 ### Always verify parameter names against n8n source code
 n8n's internal parameter names often differ from what the UI labels suggest. When a node doesn't render correctly after JSON import, check the actual node source on GitHub (`packages/nodes-base/nodes/<NodeName>/`) and test fixtures for the ground truth.
 
@@ -545,7 +560,7 @@ Key details:
 
 ### Merge v3 `chooseBranch` mode
 - Use `useDataOfInput: N` (number, 1-indexed) to select a specific input. The legacy `output: 'inputN'` string format triggers a UI warning ("The value 'inputN' is not supported!").
-- **As a join gate** (synchronize branches, don't care about data): omit `useDataOfInput` entirely and set `alwaysOutputData = true` on the node. This ensures at least one item is emitted regardless of which branch produced data, so downstream nodes always execute.
+- **As a join gate** (synchronize branches, don't care about data): prefer default `append` mode (`{}` parameters) with `alwaysOutputData = true`. The `chooseBranch` mode is only needed when you must discard data from one branch. For simple "wait for whichever branch fires, then continue" gates, `append` + `alwaysOutputData` is simpler and avoids confusion about which input's data is forwarded.
 
 ### Merge (combineByPosition) for preserving context through HTTP Request nodes
 When an HTTP Request node replaces item data with the API response, use a **fork + Merge** pattern to preserve the original context. Connect the upstream node to BOTH the HTTP Request node AND the Merge node's second input. The Merge (combineByPosition) pairs each HTTP response (input 0) with the original plan item (input 1), combining all fields into one item. This only works reliably when the item count is identical on both inputs (1:1 mapping).
@@ -770,7 +785,7 @@ Mandrill has two distinct template systems and they are NOT interchangeable:
 
 If a Mandrill account was provisioned with a Mailchimp account attached, all templates created in the Mailchimp UI live as **mctemplates** (integer IDs visible in the Mailchimp template editor URL). `/templates/list` will return an empty array even though templates exist; `/mctemplates/list` is the correct call.
 
-The n8n built-in Mandrill node (`n8n-nodes-base.mandrill`, typeVersion 1) only exposes `sendTemplate`, which hits `/messages/send-template`. For mctemplates, fall back to an HTTP Request node calling `/messages/send-mc-template` directly. The API key goes in the JSON body as `key` (not an HTTP header), so use a `httpCustomAuth` generic credential with `{"body": {"key": "..."}}` — n8n merges those body fields into the request at execution time, keeping the key out of the compiled workflow JSON.
+The n8n built-in Mandrill node (`n8n-nodes-base.mandrill`, typeVersion 1) only exposes `sendTemplate`, which hits `/messages/send-template`. For mctemplates, fall back to an HTTP Request node calling `/messages/send-mc-template` directly. API key goes in the body as `key` (not an HTTP header), so no n8n credential type is needed — bake the key into the workflow JSON at build time the same way `WEBFLOW_VERIFICATION_KEY` is handled.
 
 ### Mandrill: Mailchimp Transactional templates only substitute `global_merge_vars`, not per-recipient `merge_vars`
 For mctemplates (Mailchimp Transactional templates), the `message.merge_vars` per-recipient form (`[{ rcpt, vars: [...] }]`) is **silently ignored** during template substitution — the email sends successfully (`status: sent`) but `*|FNAME|*` etc. remain unsubstituted in the body. Use `message.global_merge_vars` (flat array) instead. For single-recipient sends the two are functionally equivalent for substitution; only globals work for mctemplates.
@@ -778,9 +793,6 @@ For mctemplates (Mailchimp Transactional templates), the `message.merge_vars` pe
 This quirk does NOT apply to native Mandrill templates (`/messages/send-template` with a slug) — those honor both forms.
 
 To debug merge issues without sending: call `/mctemplates/render` with merge_vars and inspect the returned `html` for any leftover `*|TAG|*` or `{{tag}}` patterns.
-
-### Mandrill: account in demo mode rejects external recipients with `recipient-domain-mismatch`
-A Mandrill/Mailchimp Transactional account that hasn't been activated (no email credits purchased) is in **demo mode**. Sends succeed with HTTP 200 but each recipient comes back as `status: rejected` with `reject_reason: recipient-domain-mismatch` unless their address is on the same verified domain as the sender. Activate the account by purchasing email credits in **Settings → Subscription** to lift the restriction. Domain authentication (DKIM/SPF/DMARC in Settings → Sending Domains) is a separate prerequisite and is required even after activation.
 
 ### Microsoft Graph API via HTTP Request with Outlook OAuth2 credential
 Use `authentication: 'predefinedCredentialType'` with `nodeCredentialType: 'microsoftOutlookOAuth2Api'` to call the Microsoft Graph API from an HTTP Request node, reusing the same Outlook credential used by the Microsoft Outlook node. The credential handles OAuth2 token management automatically.
