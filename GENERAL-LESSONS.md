@@ -757,5 +757,24 @@ Reddit's public `.json` endpoints (`www.reddit.com/r/.../top.json`) return 403 f
 ### Webflow field slugs can differ from what you expect
 When creating a new Webflow CMS field, the auto-generated slug may have a numeric suffix if a similar slug already exists. For example, creating a field named "Endorsement Body" when a field with slug `endorsement-body` (or close variant) is already in the collection results in a slug of `endorsement-body-2`. Always verify the actual slug in Webflow Designer (field settings panel) before referencing it in n8n workflows. The Webflow API returns `"Field not described in schema: undefined"` (400) when a field slug is not found — this is the diagnostic for a wrong slug.
 
+### Webflow CMS image URL requirements
+Webflow CMS image fields validate URLs before fetching. Requirements:
+- **File extension in the URL path** is required — query-only URLs like `https://wsrv.nl/?url=...` are rejected even when the server returns a correct `Content-Type: image/jpeg`. Workaround: prefix the path with a dummy filename, e.g. `https://wsrv.nl/image.jpg?url=...` — image proxies ignore the path but Webflow's validator sees the extension.
+- **Content-Type** must be an image type (`image/jpeg`, `image/png`, etc.), not `application/octet-stream`.
+- **Content-Disposition** should be `inline`, not `attachment`.
+- **Max asset size**: ~4MB. Anything larger is rejected at upload time.
+
+### wsrv.nl as a free image-resize proxy
+`wsrv.nl` (Cloudflare-fronted) is a zero-infra way to downscale oversized images before handing them to a CMS with size limits. Usage pattern:
+```
+https://wsrv.nl/<dummy-path>.<ext>?url=<encoded-source-url>&w=1600&output=jpg&q=82&we
+```
+- `url` — the source URL (must be URL-encoded)
+- `w` — max width in pixels
+- `output` — output format (jpg, png, webp)
+- `q` — JPEG quality (1-100)
+- `we` — "without enlargement" (don't upscale small images)
+- The dummy path (e.g., `/image.jpg`) satisfies validators that require an extension; wsrv.nl ignores it and uses `?url=` to fetch.
+
 ### Plain text vs Rich Text elements in Webflow
 Webflow CMS rich text fields must be bound to a **Rich Text element** (a div-based block), not a plain Text Block. If an existing page uses a Text Block bound to the old plain text field, replace it with a Rich Text element and re-bind to the new rich text field. Style the nested elements (p, strong, em, a, etc.) using the nested elements section of the Rich Text element's style panel.

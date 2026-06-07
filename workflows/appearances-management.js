@@ -35,6 +35,10 @@ const NOTION_CREDENTIAL = {
 // Webflow field mappings (shared between create and update)
 // ---------------------------------------------------------------------------
 
+// Webflow CMS rejects assets over ~5MB. An upstream HEAD request learns the
+// image size; the "Resolve Image URL" Code node downstream replaces oversize
+// (or unknown-size) URLs with a wsrv.nl proxy URL, so the Webflow node sees a
+// safe URL in $json["Event image"][0] regardless.
 const WEBFLOW_FIELDS = [
   { fieldId: 'event-name', fieldValue: '={{ $json["Event name"] }}' },
   { fieldId: 'start', fieldValue: '={{ $json["Delivery date"].start }}' },
@@ -272,6 +276,96 @@ const filterCommsType = createNode(
   },
 );
 
+// HEAD on the image URL to learn its size. neverError: true so 4xx/timeouts
+// don't kill the flow — missing headers are treated as "unknown → use proxy".
+const HEAD_PARAMS = {
+  method: 'HEAD',
+  url: '={{ $json["Event image"][0] }}',
+  options: {
+    response: { response: { fullResponse: true, neverError: true } },
+    timeout: 10000,
+    redirect: { redirect: { followRedirects: true } },
+  },
+};
+
+const MERGE_PARAMS = {
+  mode: 'combine',
+  combineBy: 'combineByPosition',
+  options: {},
+};
+
+// Reads the HEAD response (merged into $json.headers) and rewrites
+// Event image[0] to a wsrv.nl proxy URL when the original is over Webflow's
+// 4MB image limit, unknown size, or the HEAD failed. wsrv.nl downscales to
+// 1600px JPEG q=82, comfortably under the limit.
+//
+// The "/image.jpg" path is a Webflow workaround: Webflow's CMS image
+// validator requires a file extension in the URL path. wsrv.nl ignores the
+// path and serves based on ?url=, so any extension works.
+const RESOLVE_IMAGE_URL_CODE = `
+const MAX_BYTES = 4 * 1024 * 1024; // Webflow CMS limit
+const item = $input.item.json;
+const image = item['Event image'];
+const url = Array.isArray(image) ? image[0] : null;
+
+if (!url) {
+  return { json: item };
+}
+
+const headers = item.headers || {};
+const lenStr = headers['content-length'] || headers['Content-Length'] || '';
+const len = Number(lenStr) || 0;
+const needsProxy = !(len > 0 && len <= MAX_BYTES);
+
+const resolved = needsProxy
+  ? 'https://wsrv.nl/image.jpg?url=' + encodeURIComponent(url) + '&w=1600&output=jpg&q=82&we'
+  : url;
+
+// Strip HEAD response fields; overwrite Event image with the resolved URL.
+const { headers: _h, body: _b, statusCode: _s, ...rest } = item;
+return { json: { ...rest, 'Event image': [resolved] } };
+`.trim();
+
+const RESOLVE_PARAMS = {
+  mode: 'runOnceForEachItem',
+  language: 'javaScript',
+  jsCode: RESOLVE_IMAGE_URL_CODE,
+};
+
+const headSizeCreate = createNode(
+  'Check Image Size (Create)',
+  'n8n-nodes-base.httpRequest',
+  HEAD_PARAMS,
+  {
+    id: 'a1f6c8b2-3d4e-4f5a-9b1c-1d2e3f4a5b6c',
+    typeVersion: 4.2,
+    position: [-260, 140],
+  },
+);
+headSizeCreate.retryOnFail = true;
+
+const mergeSizeCreate = createNode(
+  'Merge Size (Create)',
+  'n8n-nodes-base.merge',
+  MERGE_PARAMS,
+  {
+    id: 'b2e7d9c3-4e5f-5a6b-ac2d-2e3f4a5b6c7d',
+    typeVersion: 3,
+    position: [-40, 140],
+  },
+);
+
+const resolveImageCreate = createNode(
+  'Resolve Image URL (Create)',
+  'n8n-nodes-base.code',
+  RESOLVE_PARAMS,
+  {
+    id: 'e5cafd36-7b8c-8d9e-df50-5b6c7d8e9fa0',
+    typeVersion: 2,
+    position: [180, 140],
+  },
+);
+
 const webflowCreate = createNode(
   'Webflow',
   'n8n-nodes-base.webflow',
@@ -285,7 +379,7 @@ const webflowCreate = createNode(
   {
     id: '8e37872f-e472-446d-8f43-c2b4d2026601',
     typeVersion: 2,
-    position: [-260, 140],
+    position: [400, 140],
     credentials: WEBFLOW_CREDENTIAL,
   },
 );
@@ -308,7 +402,7 @@ const storeWebflowId = createNode(
   {
     id: '91a5dd93-4258-4657-9972-a78e1da71dba',
     typeVersion: 2.2,
-    position: [-40, 140],
+    position: [620, 140],
     credentials: NOTION_CREDENTIAL,
   },
 );
@@ -345,6 +439,40 @@ const stillRightCommsType = createNode(
   },
 );
 
+const headSizeUpdate = createNode(
+  'Check Image Size (Update)',
+  'n8n-nodes-base.httpRequest',
+  HEAD_PARAMS,
+  {
+    id: 'c3a8eb14-5f6a-6b7c-bd3e-3f4a5b6c7d8e',
+    typeVersion: 4.2,
+    position: [-260, -360],
+  },
+);
+headSizeUpdate.retryOnFail = true;
+
+const mergeSizeUpdate = createNode(
+  'Merge Size (Update)',
+  'n8n-nodes-base.merge',
+  MERGE_PARAMS,
+  {
+    id: 'd4b9fc25-6a7b-7c8d-ce4f-4a5b6c7d8e9f',
+    typeVersion: 3,
+    position: [-40, -360],
+  },
+);
+
+const resolveImageUpdate = createNode(
+  'Resolve Image URL (Update)',
+  'n8n-nodes-base.code',
+  RESOLVE_PARAMS,
+  {
+    id: 'f6dbae47-8c9d-9eaf-ea61-6c7d8e9fa0b1',
+    typeVersion: 2,
+    position: [180, -360],
+  },
+);
+
 const updateWebflowRecord = createNode(
   'Update Webflow Record',
   'n8n-nodes-base.webflow',
@@ -359,7 +487,7 @@ const updateWebflowRecord = createNode(
   {
     id: '55e3cff9-3276-4617-8f46-ea661a4914ae',
     typeVersion: 2,
-    position: [-260, -360],
+    position: [400, -360],
     credentials: WEBFLOW_CREDENTIAL,
   },
 );
@@ -479,9 +607,15 @@ const workflow = createWorkflow('Appearances Management', {
     stillPublicAndPublishable,
     publicAndPublishable,
     filterCommsType,
+    headSizeCreate,
+    mergeSizeCreate,
+    resolveImageCreate,
     webflowCreate,
     storeWebflowId,
     stillRightCommsType,
+    headSizeUpdate,
+    mergeSizeUpdate,
+    resolveImageUpdate,
     updateWebflowRecord,
     deleteFromWebflow,
     unlinkWebflowId,
@@ -497,9 +631,13 @@ const workflow = createWorkflow('Appearances Management', {
     // Already Stored? false (output 1) → create path
     connect(alreadyStored, publicAndPublishable, 1, 0),
 
-    // Create path: filter → create → store ID
+    // Create path: filter → HEAD + passthrough → merge → create → store ID
     connect(publicAndPublishable, filterCommsType),
-    connect(filterCommsType, webflowCreate),
+    connect(filterCommsType, headSizeCreate),
+    connect(headSizeCreate, mergeSizeCreate, 0, 0),
+    connect(filterCommsType, mergeSizeCreate, 0, 1),
+    connect(mergeSizeCreate, resolveImageCreate),
+    connect(resolveImageCreate, webflowCreate),
     connect(webflowCreate, storeWebflowId, 0, 0),
 
     // Update path: still public? → still right type? → update
@@ -507,8 +645,12 @@ const workflow = createWorkflow('Appearances Management', {
     // Not public anymore → delete
     connect(stillPublicAndPublishable, deleteFromWebflow, 1, 0),
 
-    // Right comms type → update
-    connect(stillRightCommsType, updateWebflowRecord, 0, 0),
+    // Right comms type → HEAD + passthrough → merge → update
+    connect(stillRightCommsType, headSizeUpdate, 0, 0),
+    connect(headSizeUpdate, mergeSizeUpdate, 0, 0),
+    connect(stillRightCommsType, mergeSizeUpdate, 0, 1),
+    connect(mergeSizeUpdate, resolveImageUpdate),
+    connect(resolveImageUpdate, updateWebflowRecord),
     // Wrong comms type → delete
     connect(stillRightCommsType, deleteFromWebflow, 1, 0),
 
