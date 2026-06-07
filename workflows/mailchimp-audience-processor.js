@@ -24,6 +24,23 @@
 import { createWorkflow, createNode, connect } from '../lib/workflow.js';
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function schemaField(id, type = 'string', extra = {}) {
+  return {
+    id,
+    displayName: id,
+    required: false,
+    defaultMatch: false,
+    display: true,
+    canBeUsedToMatch: true,
+    type,
+    ...extra,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
@@ -401,6 +418,44 @@ const upsertContact = createNode(
       __rl: true,
       value: UPSERT_WORKFLOW_ID,
       mode: 'id',
+    },
+    workflowInputs: {
+      mappingMode: 'defineBelow',
+      value: {
+        email: '={{ $json.email }}',
+        first_name: '={{ $json.first_name }}',
+        last_name: '={{ $json.last_name }}',
+        company: '={{ $json.company }}',
+        email_marketing: '={{ $json.email_marketing }}',
+        tags: '={{ $json.tags }}',
+        street_address: '={{ $json.street_address }}',
+        street_address_2: '={{ $json.street_address_2 }}',
+        city: '={{ $json.city }}',
+        state: '={{ $json.state }}',
+        postal_code: '={{ $json.postal_code }}',
+        country: '={{ $json.country }}',
+        phone: '={{ $json.phone }}',
+        mailchimp_profile: '={{ $json.mailchimp_profile }}',
+      },
+      matchingColumns: [],
+      schema: [
+        schemaField('email'),
+        schemaField('first_name'),
+        schemaField('last_name'),
+        schemaField('company'),
+        schemaField('email_marketing'),
+        schemaField('tags', 'array'),
+        schemaField('street_address'),
+        schemaField('street_address_2'),
+        schemaField('city'),
+        schemaField('state'),
+        schemaField('postal_code'),
+        schemaField('country'),
+        schemaField('phone'),
+        schemaField('mailchimp_profile'),
+      ],
+      attemptToConvertTypes: false,
+      convertFieldsToString: true,
     },
     options: {},
   },
