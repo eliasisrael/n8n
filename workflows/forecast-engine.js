@@ -457,6 +457,98 @@ const linkRef = createNode(
 );
 linkRef.retryOnFail = true;
 
+// --- Diagnose Missing (re-evaluate IF rules to identify which field(s) failed) ---
+// IF passes the item through on the false output unchanged; this Code node
+// runs the same checks and emits a per-field issue list that the email
+// template renders as a bulleted "what's wrong" report.
+const DIAGNOSE_MISSING_CODE = `
+const item = $input.item.json;
+const issues = [];
+
+const start = item['Engagement start&end']?.start;
+if (!start) issues.push({ field: 'Start date', got: '(missing)' });
+
+const end = item['Engagement start&end']?.end;
+if (!end) issues.push({ field: 'End date', got: '(missing)' });
+
+const paymentTerms = item['Payment terms'];
+if (!paymentTerms || !/(due on receipt)|(net +\\d+)/i.test(String(paymentTerms))) {
+  issues.push({
+    field: 'Payment terms',
+    got: paymentTerms || '(missing)',
+    expected: '"Due on receipt" or "Net N"',
+  });
+}
+
+const cycleLength = item['Cycle length'];
+if (!cycleLength || !/month|quarter|year/i.test(String(cycleLength))) {
+  issues.push({
+    field: 'Cycle length',
+    got: cycleLength || '(missing)',
+    expected: 'must contain "month", "quarter", or "year"',
+  });
+}
+
+const currency = item.Currency;
+if (!currency) issues.push({ field: 'Currency', got: '(missing)' });
+
+const clientDb = item['Client db'] || [];
+if (clientDb.length !== 1 || !clientDb[0]) {
+  issues.push({
+    field: 'Client',
+    got: clientDb.length + ' relation(s)',
+    expected: 'exactly 1 client relation',
+  });
+}
+
+const pipeline = item['Sales pipeline'] || [];
+if (pipeline.length !== 1 || !pipeline[0]) {
+  issues.push({
+    field: 'Sales pipeline',
+    got: pipeline.length + ' relation(s)',
+    expected: 'exactly 1 pipeline relation',
+  });
+}
+
+const escapeHtml = (s) => String(s)
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;');
+
+const issuesHtml = '<ul>' + issues.map(i => {
+  const got = i.got === '(missing)' ? 'missing' : 'got <code>' + escapeHtml(i.got) + '</code>';
+  const expected = i.expected
+    ? ' <span style="color:#888">(expected ' + escapeHtml(i.expected) + ')</span>'
+    : '';
+  return '<li><strong>' + escapeHtml(i.field) + '</strong>: ' + got + expected + '</li>';
+}).join('') + '</ul>';
+
+const engagement = escapeHtml(item['-'] || item.id || '(unnamed)');
+const notionUrl = item.url || ('https://www.notion.so/' + String(item.id || '').replace(/-/g, ''));
+
+return {
+  json: {
+    ...item,
+    _engagement: engagement,
+    _issues: issues,
+    _issuesHtml: issuesHtml,
+    _notionUrl: notionUrl,
+  },
+};
+`.trim();
+
+const diagnoseMissing = createNode(
+  'Diagnose Missing',
+  'n8n-nodes-base.code',
+  { jsCode: DIAGNOSE_MISSING_CODE, mode: 'runOnceForEachItem' },
+  {
+    typeVersion: 2,
+    position: [64, -160],
+    id: 'd1ad4b85-b7ce-4d48-8b1c-1f37a09a6b1b',
+  }
+);
+
 // --- Send Email (missing data notification) ---
 const sendEmail = createNode(
   'Send Email',
@@ -464,15 +556,15 @@ const sendEmail = createNode(
   {
     fromEmail: 'eli@heavylift.tech',
     toEmail: 'eve@xmlgrrl.com, eli@eliasisrael.com',
-    subject: 'Forecast Entry Missing Data',
-    html: '=<html>\n<body>\n<p>The engagement for {{ $json["-"] }} is missing data and cannot be added to forecast.\n<p>\n<p>Each engagement needs:\n<ul>\n<li>Start and end dates</li>\n<li>A currency</li>\n<li>Payment terms</li>\n<li>A cycle length</li>\n<li>Client</li>\n<li>Sales pipeline item</li>\n</ul>\n</p>\n</body>\n</html>',
+    subject: '=Forecast Entry Missing Data — {{ $json._engagement }}',
+    html: '=<html>\n<body>\n<p>The engagement <strong>{{ $json._engagement }}</strong> cannot be added to the forecast.</p>\n<p>{{ $json._issues.length }} field(s) need attention:</p>\n{{ $json._issuesHtml }}\n<p style="margin-top:1.5em"><a href="{{ $json._notionUrl }}">Open in Notion →</a></p>\n<p style="color:#888;font-size:0.85em">Sent by Forecast Engine · execution {{ $execution.id }}</p>\n</body>\n</html>',
     options: {
       appendAttribution: false,
     },
   },
   {
     typeVersion: 2.1,
-    position: [64, -160],
+    position: [288, -160],
     id: 'f8397870-c0b2-4c74-ac2d-fc1ba3101c9b',
     credentials: {
       smtp: { id: 'oztI4hqIZ7r3dUx7', name: 'AWS SES SMTP' },
@@ -488,7 +580,7 @@ const done = createNode(
   {},
   {
     typeVersion: 1,
-    position: [288, -160],
+    position: [512, -160],
     id: '46664612-b62c-4d3d-a6df-2e771cb0e041',
   }
 );
@@ -499,8 +591,9 @@ const connections = [
   // If true → Notion1 + Code
   connect(ifNode, notion1, 0),
   connect(ifNode, code, 0),
-  // If false → Send Email
-  connect(ifNode, sendEmail, 1),
+  // If false → Diagnose Missing → Send Email
+  connect(ifNode, diagnoseMissing, 1),
+  connect(diagnoseMissing, sendEmail),
   // Delete path
   connect(notion1, notion2),
   connect(notion2, waitForDelete, 0, 0),
@@ -539,6 +632,7 @@ export default createWorkflow('Forecast Engine', {
     eliminateEmpty,
     waitForDelete,
     ifNode,
+    diagnoseMissing,
     sendEmail,
     done,
     trigger,
