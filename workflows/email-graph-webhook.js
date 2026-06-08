@@ -242,11 +242,16 @@ return {
 // Code: emit 3 pipeline-query items (one per pipeline DB) with ctx preserved
 // ---------------------------------------------------------------------------
 const EMIT_PIPELINE_QUERIES_CODE = `
+// runOnceForAllItems: one Code execution handles every matched email and
+// emits 3 pipeline-query items per email. (Per-item mode would force a
+// single-object return, which doesn't fit this 1→3 fan-out.)
 const PIPELINES = ${JSON.stringify(PIPELINES)};
-const ctx = $json;
 
 const out = [];
-for (const [type, p] of Object.entries(PIPELINES)) {
+for (const item of $input.all()) {
+  const ctx = item.json;
+  if (!ctx || !ctx._matchedContactId) continue;
+  for (const [type, p] of Object.entries(PIPELINES)) {
   // Build a filter: Contact contains matched contact AND Status not in terminals
   const statusFilters = p.terminalStatuses.map(s => ({
     property: 'Status',
@@ -273,8 +278,12 @@ for (const [type, p] of Object.entries(PIPELINES)) {
       _queryBody: queryBody,
     },
   });
+  }
 }
 
+if (out.length === 0) {
+  return [{ json: { _empty: true } }];
+}
 return out;
 `;
 
@@ -684,7 +693,7 @@ const isContactMatched = createNode(
 const emitPipelineQueries = createNode(
   'Emit Pipeline Queries',
   'n8n-nodes-base.code',
-  { jsCode: EMIT_PIPELINE_QUERIES_CODE, mode: 'runOnceForEachItem' },
+  { jsCode: EMIT_PIPELINE_QUERIES_CODE, mode: 'runOnceForAllItems' },
   { position: [2688, 500], typeVersion: 2 },
 );
 
