@@ -830,10 +830,20 @@ When creating a new Webflow CMS field, the auto-generated slug may have a numeri
 
 ### Webflow CMS image URL requirements
 Webflow CMS image fields validate URLs before fetching. Requirements:
-- **File extension in the URL path** is required — query-only URLs like `https://wsrv.nl/?url=...` are rejected even when the server returns a correct `Content-Type: image/jpeg`. Workaround: prefix the path with a dummy filename, e.g. `https://wsrv.nl/image.jpg?url=...` — image proxies ignore the path but Webflow's validator sees the extension.
+- **Path-based URLs only**. Webflow rejects URLs with a `?` query string, even with a fake `.jpg` path prefix and even when the server returns a valid `Content-Type: image/jpeg` payload. wsrv.nl's `https://wsrv.nl/image.jpg?url=...` form is **rejected** by Webflow despite serving a real JPEG. Use a proxy whose URL is fully path-based (Cloudinary fetch URLs, Cloudflare Image Resizing endpoints, etc.).
 - **Content-Type** must be an image type (`image/jpeg`, `image/png`, etc.), not `application/octet-stream`.
 - **Content-Disposition** should be `inline`, not `attachment`.
 - **Max asset size**: ~4MB. Anything larger is rejected at upload time.
+
+### Cloudinary fetch URL — drop-in path-based image proxy
+For Webflow (or any CMS that rejects query-based image URLs), Cloudinary's fetch URL is a one-line replacement:
+```
+https://res.cloudinary.com/<cloud>/image/fetch/<transforms>/<URL-encoded-source>
+```
+- Free tier: 25 credits/month ≈ 25k transformations or 25 GB delivered.
+- URL is fully path-based; the source URL is URL-encoded into the last path segment so its `?` and `&` become `%3F` and `%26`.
+- Transformations are comma-separated in a single path segment: `w_1600,q_82,f_jpg,c_limit` (1600px wide, JPEG quality 82, format JPEG, limit mode so small images aren't upscaled).
+- Cloudinary fetches and caches the source on first hit (~2s warm-up), then serves from CDN. If the source URL expires (Notion-signed S3 URLs expire hourly), each fresh source URL incurs one warm-up fetch.
 
 ### wsrv.nl as a free image-resize proxy
 `wsrv.nl` (Cloudflare-fronted) is a zero-infra way to downscale oversized images before handing them to a CMS with size limits. Usage pattern:
