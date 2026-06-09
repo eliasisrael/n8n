@@ -295,15 +295,20 @@ const MERGE_PARAMS = {
 };
 
 // Reads the HEAD response (merged into $json.headers) and rewrites
-// Event image[0] to a wsrv.nl proxy URL when the original is over Webflow's
-// 4MB image limit, unknown size, or the HEAD failed. wsrv.nl downscales to
-// 1600px JPEG q=82, comfortably under the limit.
+// Event image[0] to a Cloudinary fetch URL when the original is over
+// Webflow's 4MB image limit, unknown size, or the HEAD failed. Cloudinary
+// downscales to 1600px JPEG q=82 (c_limit so small images aren't upscaled),
+// comfortably under the limit.
 //
-// The "/image.jpg" path is a Webflow workaround: Webflow's CMS image
-// validator requires a file extension in the URL path. wsrv.nl ignores the
-// path and serves based on ?url=, so any extension works.
+// Why Cloudinary (not wsrv.nl): Webflow's CMS image validator rejects URLs
+// that look query-based (?url=...) even when they return a valid image
+// payload. Cloudinary's fetch URL is fully path-based, so Webflow accepts
+// it. The source URL is URL-encoded into the final path segment.
 const RESOLVE_IMAGE_URL_CODE = `
 const MAX_BYTES = 4 * 1024 * 1024; // Webflow CMS limit
+const CLOUDINARY_CLOUD = 'dml77dme3';
+const CLOUDINARY_TRANSFORMS = 'w_1600,q_82,f_jpg,c_limit';
+
 const item = $input.item.json;
 const image = item['Event image'];
 const url = Array.isArray(image) ? image[0] : null;
@@ -318,7 +323,7 @@ const len = Number(lenStr) || 0;
 const needsProxy = !(len > 0 && len <= MAX_BYTES);
 
 const resolved = needsProxy
-  ? 'https://wsrv.nl/image.jpg?url=' + encodeURIComponent(url) + '&w=1600&output=jpg&q=82&we'
+  ? 'https://res.cloudinary.com/' + CLOUDINARY_CLOUD + '/image/fetch/' + CLOUDINARY_TRANSFORMS + '/' + encodeURIComponent(url)
   : url;
 
 // Strip HEAD response fields; overwrite Event image with the resolved URL.
