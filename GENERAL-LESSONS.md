@@ -565,6 +565,13 @@ Key details:
 ### Merge (combineByPosition) for preserving context through HTTP Request nodes
 When an HTTP Request node replaces item data with the API response, use a **fork + Merge** pattern to preserve the original context. Connect the upstream node to BOTH the HTTP Request node AND the Merge node's second input. The Merge (combineByPosition) pairs each HTTP response (input 0) with the original plan item (input 1), combining all fields into one item. This only works reliably when the item count is identical on both inputs (1:1 mapping).
 
+### HTTP Request JSON body fails when its expression resolves to undefined
+An HTTP Request node with `specifyBody: 'json'` and `jsonBody: '={{ $json._someField }}'` throws **"JSON parameter needs to be valid JSON"** at execution time when `_someField` is missing/undefined on the incoming item — the expression resolves to an empty/undefined value, which isn't valid JSON.
+
+This bites when a **upstream Code node conditionally builds the body**: on the happy path it sets the field, but on an early-exit path it returns the item with a sentinel flag (e.g. `_noCandidates: true`) and leaves the body field unset. If the HTTP node is wired directly after the Code node, the sentinel item still flows in and fails.
+
+**Fix**: gate the HTTP node with a Filter node that drops the sentinel items before they reach it (e.g. condition `_noCandidates notEquals true`). This matches the pattern already used for other skip-sentinels in the same chain (`_noMatch`, `_isMailingList`). Don't rely on the Code node "not emitting" the item — `runOnceForEachItem` mode always emits one output item per input item.
+
 ---
 
 ## Data Handling Patterns
@@ -828,22 +835,25 @@ Reddit's public `.json` endpoints (`www.reddit.com/r/.../top.json`) return 403 f
 ### Webflow field slugs can differ from what you expect
 When creating a new Webflow CMS field, the auto-generated slug may have a numeric suffix if a similar slug already exists. For example, creating a field named "Endorsement Body" when a field with slug `endorsement-body` (or close variant) is already in the collection results in a slug of `endorsement-body-2`. Always verify the actual slug in Webflow Designer (field settings panel) before referencing it in n8n workflows. The Webflow API returns `"Field not described in schema: undefined"` (400) when a field slug is not found — this is the diagnostic for a wrong slug.
 
-### Webflow CMS image URL requirements
-Webflow CMS image fields validate URLs before fetching. Requirements:
-- **Path-based URLs only**. Webflow rejects URLs with a `?` query string, even with a fake `.jpg` path prefix and even when the server returns a valid `Content-Type: image/jpeg` payload. wsrv.nl's `https://wsrv.nl/image.jpg?url=...` form is **rejected** by Webflow despite serving a real JPEG. Use a proxy whose URL is fully path-based (Cloudinary fetch URLs, Cloudflare Image Resizing endpoints, etc.).
-- **Content-Type** must be an image type (`image/jpeg`, `image/png`, etc.), not `application/octet-stream`.
-- **Content-Disposition** should be `inline`, not `attachment`.
-- **Max asset size**: ~4MB. Anything larger is rejected at upload time.
+### Webflow CMS image handling — how it actually works (corrected July 2026)
+Webflow CMS image fields **re-host** the image: set the field to a URL and Webflow downloads the bytes at ingest time and stores the asset on its own CDN (`cdn.prod.website-files.com`). The source URL only needs to return a valid image via **GET** at ingest.
 
-### Cloudinary fetch URL — drop-in path-based image proxy
-For Webflow (or any CMS that rejects query-based image URLs), Cloudinary's fetch URL is a one-line replacement:
-```
-https://res.cloudinary.com/<cloud>/image/fetch/<transforms>/<URL-encoded-source>
-```
-- Free tier: 25 credits/month ≈ 25k transformations or 25 GB delivered.
-- URL is fully path-based; the source URL is URL-encoded into the last path segment so its `?` and `&` become `%3F` and `%26`.
-- Transformations are comma-separated in a single path segment: `w_1600,q_82,f_jpg,c_limit` (1600px wide, JPEG quality 82, format JPEG, limit mode so small images aren't upscaled).
-- Cloudinary fetches and caches the source on first hit (~2s warm-up), then serves from CDN. If the source URL expires (Notion-signed S3 URLs expire hourly), each fresh source URL incurs one warm-up fetch.
+- **Webflow DOES accept query-string URLs.** Raw Notion signed-S3 URLs (`...s3.amazonaws.com/...?X-Amz-...`) re-host successfully. The earlier claim that "Webflow rejects `?` query strings" was **wrong** — it mis-attributed a wsrv.nl failure to the query string. Passing the raw Notion file URL works.
+- **GET-only presigned URLs break a HEAD size-check.** Notion presigns S3 URLs for **GET only**, so a `HEAD` returns **403 with no `Content-Length`**. To learn an image's size use a **ranged GET** (`Range: bytes=0-0`, read the total from `Content-Range`) — never `HEAD`.
+- **Failed ingest → 0-byte asset.** If Webflow's ingest download fails (or the proxy returns an error), Webflow silently stores the failed/empty response as a **0-byte asset** → broken image that still "succeeds." So a broken proxy looks like a successful create.
+- **Max asset size ~4MB**; `Content-Type` must be an image type; `Content-Disposition` should be `inline`.
+
+### Do NOT use a Cloudinary *fetch* URL for Notion images
+Cloudinary's `image/fetch/` URL **cannot retrieve Notion signed-S3 URLs** — it returns HTTP 400 + a 0-byte GIF, which Webflow then re-hosts as a broken image. (Cloudinary fetch works for plain public images, just not for long, query-heavy signed URLs.) This broke **every June-2026 appearance image**. Cloudinary *fetch* is not a reliable proxy for ephemeral signed URLs.
+
+### Robust pattern: upload the bytes to Webflow's Assets API ("Path B")
+For images that may exceed Webflow's 4MB limit (or any case needing resize), don't hot-link a proxy — download the bytes and upload them to Webflow's Assets API, then set the CMS field to the resulting permanent `hostedUrl`. Removes expiry, query-string, and proxy-fragility problems. See the `webflow-image-ingest` sub-workflow:
+- Download via HTTP (response=file → filesystem binary; needs `N8N_DEFAULT_BINARY_DATA_MODE=filesystem`).
+- Resize oversized images with the Edit Image node (needs GraphicsMagick/ImageMagick installed on the host; `gm version` to verify).
+- `POST /v2/sites/{site}/assets` with `{ fileName, fileHash: <md5 of bytes> }` → returns a presigned S3 `uploadUrl` + `uploadDetails`; POST the bytes there as multipart (uploadDetails fields first, `file` **last**).
+- The Assets API needs an **`assets:write`** scope — the standard n8n Webflow OAuth2 credential lacks it; use a Webflow API token (its n8n credential save-test may false-negative on an unrelated endpoint — save anyway; the token works for `/assets`).
+- Webflow **dedupes assets by content hash** (`fileHash`) — re-uploading identical bytes returns the existing asset (no duplicates), so a per-update re-ingest is idempotent.
+- Set the Webflow node's `live: true` to publish the change to the live site; `live: ''` only stages it in the CMS.
 
 ### wsrv.nl as a free image-resize proxy
 `wsrv.nl` (Cloudflare-fronted) is a zero-infra way to downscale oversized images before handing them to a CMS with size limits. Usage pattern:
