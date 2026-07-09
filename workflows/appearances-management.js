@@ -13,14 +13,23 @@
  *   - Check if it's public & publishable and the right comms type
  *   - If yes → create in Webflow and store the new WebflowId in Notion
  *
- * Handles Webflow delete errors: if a 404 is returned (item already gone),
- * it still unlinks the WebflowId from Notion.
+ * Image handling (Path B): Notion image URLs are ephemeral, GET-only, hourly-
+ * expiring signed-S3 URLs, and Webflow rejects query-string URLs — so instead
+ * of handing Webflow a URL to re-host, we upload the actual bytes to Webflow's
+ * Assets API (via the `webflow-image-ingest` sub-workflow) and set the photo
+ * field to the resulting permanent hostedUrl.
+ *
+ * Fingerprint gate: the update path skips re-ingesting an unchanged image by
+ * comparing the current Notion image path (URL minus its `?query`) against the
+ * `Webflow Image Key` stored in Notion on the previous ingest. Only a genuinely
+ * changed image triggers a new upload; Webflow also dedupes by content hash as
+ * a backstop. Requires a `Webflow Image Key` (rich_text) property on the DB.
  */
 
 import { createWorkflow, createNode, connect } from '../lib/workflow.js';
 
 // ---------------------------------------------------------------------------
-// Credentials
+// Credentials / IDs
 // ---------------------------------------------------------------------------
 
 const WEBFLOW_CREDENTIAL = {
@@ -31,14 +40,14 @@ const NOTION_CREDENTIAL = {
   notionApi: { id: 'lOLrwKiRnGrhZ9xM', name: 'Eve Notion Account' },
 };
 
+const INGEST_WORKFLOW_ID = 'ukgsdamtBYr76U2i';  // Webflow Image Ingest
+const WEBFLOW_SITE_ID = '66022db75af9853636d1ce23';
+const WEBFLOW_COLLECTION_ID = '66099e748dae61ccc0110673';
+
 // ---------------------------------------------------------------------------
-// Webflow field mappings (shared between create and update)
+// Webflow field mappings
 // ---------------------------------------------------------------------------
 
-// Webflow CMS rejects assets over ~5MB. An upstream HEAD request learns the
-// image size; the "Resolve Image URL" Code node downstream replaces oversize
-// (or unknown-size) URLs with a wsrv.nl proxy URL, so the Webflow node sees a
-// safe URL in $json["Event image"][0] regardless.
 const WEBFLOW_FIELDS = [
   { fieldId: 'event-name', fieldValue: '={{ $json["Event name"] }}' },
   { fieldId: 'start', fieldValue: '={{ $json["Delivery date"].start }}' },
@@ -56,6 +65,10 @@ const WEBFLOW_FIELDS = [
   { fieldId: 'name', fieldValue: '={{ $json.Name }}' },
 ];
 
+// Same fields minus the photo — used on the "image unchanged" update path so
+// Webflow leaves the existing asset in place (no re-upload).
+const WEBFLOW_FIELDS_NO_PHOTO = WEBFLOW_FIELDS.filter((f) => f.fieldId !== 'photo');
+
 // ---------------------------------------------------------------------------
 // Comms type conditions (shared between create-path filter and update-path IF)
 // ---------------------------------------------------------------------------
@@ -67,27 +80,85 @@ function makeCommsTypeConditions(ids) {
     id: ids[i],
     leftValue: '={{ $json["Comms type"] }}',
     rightValue: type,
-    operator: {
-      type: 'array',
-      operation: 'contains',
-      rightType: 'any',
-    },
+    operator: { type: 'array', operation: 'contains', rightType: 'any' },
   }));
 }
 
 // ---------------------------------------------------------------------------
-// Nodes
+// Shared code
+// ---------------------------------------------------------------------------
+
+// After the ingest+merge: overwrite Event image with the permanent Webflow
+// hostedUrl, and stash the fingerprint (original Notion URL minus its query) so
+// it can be written back to Notion.
+const SET_PHOTO_CODE = `
+const item = $json;
+const orig = (Array.isArray(item['Event image']) ? item['Event image'][0] : '') || '';
+const key = String(orig).split('?')[0];
+return { json: { ...item, 'Event image': [item.hostedUrl], _imageKey: key } };
+`.trim();
+
+// Build the { imageUrl } input the ingest sub-workflow expects, keeping the
+// rest of the record for the downstream merge/passthrough.
+function setImageUrlNode(name, id, position) {
+  return createNode(
+    name,
+    'n8n-nodes-base.set',
+    {
+      mode: 'manual',
+      includeOtherFields: true,
+      assignments: {
+        assignments: [
+          { id, name: 'imageUrl', value: '={{ $json["Event image"][0] }}', type: 'string' },
+        ],
+      },
+      options: {},
+    },
+    { typeVersion: 3.4, position },
+  );
+}
+
+function ingestNode(name, position) {
+  const node = createNode(
+    name,
+    'n8n-nodes-base.executeWorkflow',
+    {
+      workflowId: { __rl: true, mode: 'id', value: INGEST_WORKFLOW_ID },
+      options: {},
+    },
+    { typeVersion: 1.2, position },
+  );
+  node.retryOnFail = true;
+  return node;
+}
+
+function mergeNode(name, position) {
+  return createNode(
+    name,
+    'n8n-nodes-base.merge',
+    { mode: 'combine', combineBy: 'combineByPosition', options: {} },
+    { typeVersion: 3, position },
+  );
+}
+
+function setPhotoNode(name, position) {
+  return createNode(
+    name,
+    'n8n-nodes-base.code',
+    { mode: 'runOnceForEachItem', language: 'javaScript', jsCode: SET_PHOTO_CODE },
+    { typeVersion: 2, position },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Nodes — shared spine
 // ---------------------------------------------------------------------------
 
 const trigger = createNode(
   'When Executed by Another Workflow',
   'n8n-nodes-base.executeWorkflowTrigger',
   { inputSource: 'passthrough' },
-  {
-    id: 'c194ccf8-f8a7-4981-a53b-764ad92eeaaa',
-    typeVersion: 1.1,
-    position: [-1140, -135],
-  },
+  { typeVersion: 1.1, position: [-1140, -135] },
 );
 
 const alreadyStored = createNode(
@@ -95,33 +166,20 @@ const alreadyStored = createNode(
   'n8n-nodes-base.if',
   {
     conditions: {
-      options: {
-        caseSensitive: true,
-        leftValue: '',
-        typeValidation: 'strict',
-        version: 2,
-      },
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
       conditions: [
         {
           id: '4bd52b16-e8bc-4cac-933f-481281f3c979',
           leftValue: '={{ $json.WebflowId }}',
           rightValue: '',
-          operator: {
-            type: 'string',
-            operation: 'notEmpty',
-            singleValue: true,
-          },
+          operator: { type: 'string', operation: 'notEmpty', singleValue: true },
         },
       ],
       combinator: 'and',
     },
     options: {},
   },
-  {
-    id: '2e32323f-0059-4ff3-bfaf-1a51bef42ffb',
-    typeVersion: 2.2,
-    position: [-920, -135],
-  },
+  { typeVersion: 2.2, position: [-920, -135] },
 );
 
 const stillPublicAndPublishable = createNode(
@@ -129,59 +187,20 @@ const stillPublicAndPublishable = createNode(
   'n8n-nodes-base.if',
   {
     conditions: {
-      options: {
-        caseSensitive: true,
-        leftValue: '',
-        typeValidation: 'strict',
-        version: 2,
-      },
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
       conditions: [
-        {
-          id: 'c165d19e-ecd3-49de-92a1-743686b380e0',
-          leftValue: '={{ $json["Public?"] }}',
-          rightValue: '',
-          operator: { type: 'boolean', operation: 'true', singleValue: true },
-        },
-        {
-          id: '0cf0a8f0-baeb-4c43-b113-889dee8f386d',
-          leftValue: '={{ $json["Post-event description"] }}',
-          rightValue: '',
-          operator: { type: 'string', operation: 'notEmpty', singleValue: true },
-        },
-        {
-          id: 'f9f8b2b6-af8d-465c-8e2b-e3cd4f007643',
-          leftValue: '={{ $json["Pre-event description"] }}',
-          rightValue: '',
-          operator: { type: 'string', operation: 'notEmpty', singleValue: true },
-        },
-        {
-          id: 'aacc0459-573d-4590-ba5f-bf30f1c63705',
-          leftValue: '={{ $json["Event image"][0] }}',
-          rightValue: '',
-          operator: { type: 'string', operation: 'notEmpty', singleValue: true },
-        },
-        {
-          id: '3961d022-3952-4967-aa56-a01f9e2098a1',
-          leftValue: '={{ $json.Status }}',
-          rightValue: '^(Confirmed|Delivered by me|Completed.Captured)$',
-          operator: { type: 'string', operation: 'regex' },
-        },
-        {
-          id: '13f6344c-5b62-465c-85af-11fe8abcae7c',
-          leftValue: '={{ $json["Publication window"] }}',
-          rightValue: '',
-          operator: { type: 'object', operation: 'notEmpty', singleValue: true },
-        },
+        { id: 'c165d19e-ecd3-49de-92a1-743686b380e0', leftValue: '={{ $json["Public?"] }}', rightValue: '', operator: { type: 'boolean', operation: 'true', singleValue: true } },
+        { id: '0cf0a8f0-baeb-4c43-b113-889dee8f386d', leftValue: '={{ $json["Post-event description"] }}', rightValue: '', operator: { type: 'string', operation: 'notEmpty', singleValue: true } },
+        { id: 'f9f8b2b6-af8d-465c-8e2b-e3cd4f007643', leftValue: '={{ $json["Pre-event description"] }}', rightValue: '', operator: { type: 'string', operation: 'notEmpty', singleValue: true } },
+        { id: 'aacc0459-573d-4590-ba5f-bf30f1c63705', leftValue: '={{ $json["Event image"][0] }}', rightValue: '', operator: { type: 'string', operation: 'notEmpty', singleValue: true } },
+        { id: '3961d022-3952-4967-aa56-a01f9e2098a1', leftValue: '={{ $json.Status }}', rightValue: '^(Confirmed|Delivered by me|Completed.Captured)$', operator: { type: 'string', operation: 'regex' } },
+        { id: '13f6344c-5b62-465c-85af-11fe8abcae7c', leftValue: '={{ $json["Publication window"] }}', rightValue: '', operator: { type: 'object', operation: 'notEmpty', singleValue: true } },
       ],
       combinator: 'and',
     },
     options: {},
   },
-  {
-    id: '7ba69267-b30b-4de7-bbbe-857e3b6956de',
-    typeVersion: 2.2,
-    position: [-700, -235],
-  },
+  { typeVersion: 2.2, position: [-700, -235] },
 );
 
 const publicAndPublishable = createNode(
@@ -189,59 +208,20 @@ const publicAndPublishable = createNode(
   'n8n-nodes-base.filter',
   {
     conditions: {
-      options: {
-        caseSensitive: true,
-        leftValue: '',
-        typeValidation: 'strict',
-        version: 2,
-      },
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
       conditions: [
-        {
-          id: '13d7e12f-fdc4-4c8b-9c70-10d02dc8a0d3',
-          leftValue: '={{ $json["Public?"] }}',
-          rightValue: '',
-          operator: { type: 'boolean', operation: 'true', singleValue: true },
-        },
-        {
-          id: '522df334-7e76-4b66-846e-d2ee1727a75e',
-          leftValue: '={{ $json.Status }}',
-          rightValue: '(Confirmed|Delivered by me|Completed.Captured)',
-          operator: { type: 'string', operation: 'regex' },
-        },
-        {
-          id: '32565c46-3760-4bab-808f-d97017818f10',
-          leftValue: '={{ $json["Event image"] }}',
-          rightValue: '',
-          operator: { type: 'array', operation: 'notEmpty', singleValue: true },
-        },
-        {
-          id: '5016eb88-8e37-414c-b6d3-3e10b8b39959',
-          leftValue: '={{ $json["Pre-event description"] }}',
-          rightValue: '',
-          operator: { type: 'string', operation: 'notEmpty', singleValue: true },
-        },
-        {
-          id: '62842c31-2e41-4307-ae2b-0c03f4d9dae3',
-          leftValue: '={{ $json["Post-event description"] }}',
-          rightValue: '',
-          operator: { type: 'string', operation: 'notEmpty', singleValue: true },
-        },
-        {
-          id: '0f4f917a-d6af-4393-bc7c-0feae08dce34',
-          leftValue: '={{ $json["Publication window"] }}',
-          rightValue: '',
-          operator: { type: 'object', operation: 'exists', singleValue: true },
-        },
+        { id: '13d7e12f-fdc4-4c8b-9c70-10d02dc8a0d3', leftValue: '={{ $json["Public?"] }}', rightValue: '', operator: { type: 'boolean', operation: 'true', singleValue: true } },
+        { id: '522df334-7e76-4b66-846e-d2ee1727a75e', leftValue: '={{ $json.Status }}', rightValue: '(Confirmed|Delivered by me|Completed.Captured)', operator: { type: 'string', operation: 'regex' } },
+        { id: '32565c46-3760-4bab-808f-d97017818f10', leftValue: '={{ $json["Event image"] }}', rightValue: '', operator: { type: 'array', operation: 'notEmpty', singleValue: true } },
+        { id: '5016eb88-8e37-414c-b6d3-3e10b8b39959', leftValue: '={{ $json["Pre-event description"] }}', rightValue: '', operator: { type: 'string', operation: 'notEmpty', singleValue: true } },
+        { id: '62842c31-2e41-4307-ae2b-0c03f4d9dae3', leftValue: '={{ $json["Post-event description"] }}', rightValue: '', operator: { type: 'string', operation: 'notEmpty', singleValue: true } },
+        { id: '0f4f917a-d6af-4393-bc7c-0feae08dce34', leftValue: '={{ $json["Publication window"] }}', rightValue: '', operator: { type: 'object', operation: 'exists', singleValue: true } },
       ],
       combinator: 'and',
     },
     options: {},
   },
-  {
-    id: '8e854802-40e8-4079-b4da-30ccca53b1a3',
-    typeVersion: 2.2,
-    position: [-700, 140],
-  },
+  { typeVersion: 2.2, position: [-700, 140] },
 );
 publicAndPublishable.alwaysOutputData = false;
 
@@ -250,143 +230,59 @@ const filterCommsType = createNode(
   'n8n-nodes-base.filter',
   {
     conditions: {
-      options: {
-        caseSensitive: true,
-        leftValue: '',
-        typeValidation: 'strict',
-        version: 2,
-      },
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
       conditions: makeCommsTypeConditions([
-        '1344d39a-e994-41da-8d2a-2b75a23612a3',
-        '2ce770a0-4c8e-4d49-ae61-6cc0e50ad5c8',
-        'fc4e650d-1f74-47de-9bf5-f7586e6fd1a3',
-        'c96cacd8-ea09-46f0-9a80-931483343558',
-        '887f8487-b9de-420e-9a4f-c44757acc3f1',
-        '2f10b9cb-9148-4866-94fa-e8e1ce3eec7b',
+        '1344d39a-e994-41da-8d2a-2b75a23612a3', '2ce770a0-4c8e-4d49-ae61-6cc0e50ad5c8',
+        'fc4e650d-1f74-47de-9bf5-f7586e6fd1a3', 'c96cacd8-ea09-46f0-9a80-931483343558',
+        '887f8487-b9de-420e-9a4f-c44757acc3f1', '2f10b9cb-9148-4866-94fa-e8e1ce3eec7b',
         '498645c2-96f9-4e96-adac-17a6b98002f9',
       ]),
       combinator: 'or',
     },
     options: {},
   },
-  {
-    id: 'f5aaa120-f5c4-4b0d-b691-9e0320b364db',
-    typeVersion: 2.2,
-    position: [-480, 140],
-  },
+  { typeVersion: 2.2, position: [-480, 140] },
 );
 
-// HEAD on the image URL to learn its size. neverError: true so 4xx/timeouts
-// don't kill the flow — missing headers are treated as "unknown → use proxy".
-const HEAD_PARAMS = {
-  method: 'HEAD',
-  url: '={{ $json["Event image"][0] }}',
-  options: {
-    response: { response: { fullResponse: true, neverError: true } },
-    timeout: 10000,
-    redirect: { redirect: { followRedirects: true } },
-  },
-};
-
-const MERGE_PARAMS = {
-  mode: 'combine',
-  combineBy: 'combineByPosition',
-  options: {},
-};
-
-// Reads the HEAD response (merged into $json.headers) and rewrites
-// Event image[0] to a Cloudinary fetch URL when the original is over
-// Webflow's 4MB image limit, unknown size, or the HEAD failed. Cloudinary
-// downscales to 1600px JPEG q=82 (c_limit so small images aren't upscaled),
-// comfortably under the limit.
-//
-// Why Cloudinary (not wsrv.nl): Webflow's CMS image validator rejects URLs
-// that look query-based (?url=...) even when they return a valid image
-// payload. Cloudinary's fetch URL is fully path-based, so Webflow accepts
-// it. The source URL is URL-encoded into the final path segment.
-const RESOLVE_IMAGE_URL_CODE = `
-const MAX_BYTES = 4 * 1024 * 1024; // Webflow CMS limit
-const CLOUDINARY_CLOUD = 'dml77dme3';
-const CLOUDINARY_TRANSFORMS = 'w_1600,q_82,f_jpg,c_limit';
-
-const item = $input.item.json;
-const image = item['Event image'];
-const url = Array.isArray(image) ? image[0] : null;
-
-if (!url) {
-  return { json: item };
-}
-
-const headers = item.headers || {};
-const lenStr = headers['content-length'] || headers['Content-Length'] || '';
-const len = Number(lenStr) || 0;
-const needsProxy = !(len > 0 && len <= MAX_BYTES);
-
-const resolved = needsProxy
-  ? 'https://res.cloudinary.com/' + CLOUDINARY_CLOUD + '/image/fetch/' + CLOUDINARY_TRANSFORMS + '/' + encodeURIComponent(url)
-  : url;
-
-// Strip HEAD response fields; overwrite Event image with the resolved URL.
-const { headers: _h, body: _b, statusCode: _s, ...rest } = item;
-return { json: { ...rest, 'Event image': [resolved] } };
-`.trim();
-
-const RESOLVE_PARAMS = {
-  mode: 'runOnceForEachItem',
-  language: 'javaScript',
-  jsCode: RESOLVE_IMAGE_URL_CODE,
-};
-
-const headSizeCreate = createNode(
-  'Check Image Size (Create)',
-  'n8n-nodes-base.httpRequest',
-  HEAD_PARAMS,
+const stillRightCommsType = createNode(
+  'Still right comms type?',
+  'n8n-nodes-base.if',
   {
-    id: 'a1f6c8b2-3d4e-4f5a-9b1c-1d2e3f4a5b6c',
-    typeVersion: 4.2,
-    position: [-260, 140],
+    conditions: {
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
+      conditions: makeCommsTypeConditions([
+        'b5d8059d-c864-483a-85c1-64a506a25f40', '66ebf368-9374-4145-b1da-3aaebf8c7398',
+        '7d6feeac-11a7-4163-9827-c14aebc5ae7e', '8837709f-fdbb-463f-98c9-e95f5d40232c',
+        'e7478b0f-a371-425c-a12f-0a306643ebec', '14faf27b-d875-4f24-9049-eeb05a219abe',
+        '53c6c988-9e76-4633-9ff9-7a3a968708a4',
+      ]),
+      combinator: 'or',
+    },
+    options: {},
   },
-);
-headSizeCreate.retryOnFail = true;
-
-const mergeSizeCreate = createNode(
-  'Merge Size (Create)',
-  'n8n-nodes-base.merge',
-  MERGE_PARAMS,
-  {
-    id: 'b2e7d9c3-4e5f-5a6b-ac2d-2e3f4a5b6c7d',
-    typeVersion: 3,
-    position: [-40, 140],
-  },
+  { typeVersion: 2.2, position: [-480, -310] },
 );
 
-const resolveImageCreate = createNode(
-  'Resolve Image URL (Create)',
-  'n8n-nodes-base.code',
-  RESOLVE_PARAMS,
-  {
-    id: 'e5cafd36-7b8c-8d9e-df50-5b6c7d8e9fa0',
-    typeVersion: 2,
-    position: [180, 140],
-  },
-);
+// ---------------------------------------------------------------------------
+// Create path
+// ---------------------------------------------------------------------------
+
+const setImageUrlCreate = setImageUrlNode('Set imageUrl (Create)', 'a1000000-0000-4000-8000-000000000001', [-260, 140]);
+const ingestCreate = ingestNode('Ingest Image (Create)', [-40, 60]);
+const mergeCreate = mergeNode('Merge Ingest (Create)', [180, 140]);
+const setPhotoCreate = setPhotoNode('Set Photo (Create)', [400, 140]);
 
 const webflowCreate = createNode(
   'Webflow',
   'n8n-nodes-base.webflow',
   {
     operation: 'create',
-    siteId: '66022db75af9853636d1ce23',
-    collectionId: '66099e748dae61ccc0110673',
+    siteId: WEBFLOW_SITE_ID,
+    collectionId: WEBFLOW_COLLECTION_ID,
     live: true,
     fieldsUi: { fieldValues: WEBFLOW_FIELDS },
   },
-  {
-    id: '8e37872f-e472-446d-8f43-c2b4d2026601',
-    typeVersion: 2,
-    position: [400, 140],
-    credentials: WEBFLOW_CREDENTIAL,
-  },
+  { typeVersion: 2, position: [620, 140], credentials: WEBFLOW_CREDENTIAL },
 );
 webflowCreate.retryOnFail = true;
 
@@ -400,119 +296,103 @@ const storeWebflowId = createNode(
     propertiesUi: {
       propertyValues: [
         { key: 'WebflowId|rich_text', textContent: '={{ $json.id }}' },
+        { key: 'Webflow Image Key|rich_text', textContent: "={{ $('Set Photo (Create)').item.json._imageKey }}" },
       ],
     },
     options: {},
   },
-  {
-    id: '91a5dd93-4258-4657-9972-a78e1da71dba',
-    typeVersion: 2.2,
-    position: [620, 140],
-    credentials: NOTION_CREDENTIAL,
-  },
+  { typeVersion: 2.2, position: [840, 140], credentials: NOTION_CREDENTIAL },
 );
 storeWebflowId.retryOnFail = true;
 
-const stillRightCommsType = createNode(
-  'Still right comms type?',
+// ---------------------------------------------------------------------------
+// Update path — fingerprint gate
+// ---------------------------------------------------------------------------
+
+const imageChanged = createNode(
+  'Image Changed?',
   'n8n-nodes-base.if',
   {
     conditions: {
-      options: {
-        caseSensitive: true,
-        leftValue: '',
-        typeValidation: 'strict',
-        version: 2,
-      },
-      conditions: makeCommsTypeConditions([
-        'b5d8059d-c864-483a-85c1-64a506a25f40',
-        '66ebf368-9374-4145-b1da-3aaebf8c7398',
-        '7d6feeac-11a7-4163-9827-c14aebc5ae7e',
-        '8837709f-fdbb-463f-98c9-e95f5d40232c',
-        'e7478b0f-a371-425c-a12f-0a306643ebec',
-        '14faf27b-d875-4f24-9049-eeb05a219abe',
-        '53c6c988-9e76-4633-9ff9-7a3a968708a4',
-      ]),
-      combinator: 'or',
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
+      conditions: [
+        {
+          id: 'img-change-1',
+          leftValue: "={{ ($json['Event image'] && $json['Event image'][0] ? $json['Event image'][0].split('?')[0] : '') }}",
+          rightValue: "={{ $json['Webflow Image Key'] || '' }}",
+          operator: { type: 'string', operation: 'notEquals' },
+        },
+      ],
+      combinator: 'and',
     },
     options: {},
   },
-  {
-    id: 'cf8ab480-2e6e-4eff-86b8-1e8540540845',
-    typeVersion: 2.2,
-    position: [-480, -310],
-  },
+  { typeVersion: 2.2, position: [-260, -360] },
 );
 
-const headSizeUpdate = createNode(
-  'Check Image Size (Update)',
-  'n8n-nodes-base.httpRequest',
-  HEAD_PARAMS,
-  {
-    id: 'c3a8eb14-5f6a-6b7c-bd3e-3f4a5b6c7d8e',
-    typeVersion: 4.2,
-    position: [-260, -360],
-  },
-);
-headSizeUpdate.retryOnFail = true;
+const setImageUrlUpdate = setImageUrlNode('Set imageUrl (Update)', 'a2000000-0000-4000-8000-000000000002', [-40, -440]);
+const ingestUpdate = ingestNode('Ingest Image (Update)', [180, -520]);
+const mergeUpdate = mergeNode('Merge Ingest (Update)', [400, -440]);
+const setPhotoUpdate = setPhotoNode('Set Photo (Update)', [620, -440]);
 
-const mergeSizeUpdate = createNode(
-  'Merge Size (Update)',
-  'n8n-nodes-base.merge',
-  MERGE_PARAMS,
-  {
-    id: 'd4b9fc25-6a7b-7c8d-ce4f-4a5b6c7d8e9f',
-    typeVersion: 3,
-    position: [-40, -360],
-  },
-);
-
-const resolveImageUpdate = createNode(
-  'Resolve Image URL (Update)',
-  'n8n-nodes-base.code',
-  RESOLVE_PARAMS,
-  {
-    id: 'f6dbae47-8c9d-9eaf-ea61-6c7d8e9fa0b1',
-    typeVersion: 2,
-    position: [180, -360],
-  },
-);
-
-const updateWebflowRecord = createNode(
+const updateWebflowWithPhoto = createNode(
   'Update Webflow Record',
   'n8n-nodes-base.webflow',
   {
     operation: 'update',
-    siteId: '66022db75af9853636d1ce23',
-    collectionId: '66099e748dae61ccc0110673',
+    siteId: WEBFLOW_SITE_ID,
+    collectionId: WEBFLOW_COLLECTION_ID,
     itemId: '={{ $json.WebflowId }}',
     live: true,
     fieldsUi: { fieldValues: WEBFLOW_FIELDS },
   },
-  {
-    id: '55e3cff9-3276-4617-8f46-ea661a4914ae',
-    typeVersion: 2,
-    position: [400, -360],
-    credentials: WEBFLOW_CREDENTIAL,
-  },
+  { typeVersion: 2, position: [840, -440], credentials: WEBFLOW_CREDENTIAL },
 );
-updateWebflowRecord.retryOnFail = true;
+updateWebflowWithPhoto.retryOnFail = true;
+
+const storeKeyUpdate = createNode(
+  'Store Image Key in Notion',
+  'n8n-nodes-base.notion',
+  {
+    resource: 'databasePage',
+    operation: 'update',
+    pageId: { __rl: true, value: "={{ $('Set Photo (Update)').item.json.id }}", mode: 'id' },
+    propertiesUi: {
+      propertyValues: [
+        { key: 'Webflow Image Key|rich_text', textContent: "={{ $('Set Photo (Update)').item.json._imageKey }}" },
+      ],
+    },
+    options: {},
+  },
+  { typeVersion: 2.2, position: [1060, -440], credentials: NOTION_CREDENTIAL },
+);
+storeKeyUpdate.retryOnFail = true;
+
+// Unchanged image → update everything except the photo (Webflow keeps the asset)
+const updateWebflowNoPhoto = createNode(
+  'Update Webflow (No Photo)',
+  'n8n-nodes-base.webflow',
+  {
+    operation: 'update',
+    siteId: WEBFLOW_SITE_ID,
+    collectionId: WEBFLOW_COLLECTION_ID,
+    itemId: '={{ $json.WebflowId }}',
+    live: true,
+    fieldsUi: { fieldValues: WEBFLOW_FIELDS_NO_PHOTO },
+  },
+  { typeVersion: 2, position: [180, -300], credentials: WEBFLOW_CREDENTIAL },
+);
+updateWebflowNoPhoto.retryOnFail = true;
+
+// ---------------------------------------------------------------------------
+// Delete path (unchanged)
+// ---------------------------------------------------------------------------
 
 const deleteFromWebflow = createNode(
   'Delete from Webflow',
   'n8n-nodes-base.webflow',
-  {
-    operation: 'deleteItem',
-    siteId: '66022db75af9853636d1ce23',
-    collectionId: '66099e748dae61ccc0110673',
-    itemId: '={{ $json.WebflowId }}',
-  },
-  {
-    id: 'fa15edd2-7796-4813-b4a4-0c77d7a9be0d',
-    typeVersion: 2,
-    position: [-260, -140],
-    credentials: WEBFLOW_CREDENTIAL,
-  },
+  { operation: 'deleteItem', siteId: WEBFLOW_SITE_ID, collectionId: WEBFLOW_COLLECTION_ID, itemId: '={{ $json.WebflowId }}' },
+  { typeVersion: 2, position: [-260, -140], credentials: WEBFLOW_CREDENTIAL },
 );
 deleteFromWebflow.retryOnFail = true;
 deleteFromWebflow.onError = 'continueErrorOutput';
@@ -524,52 +404,27 @@ const unlinkWebflowId = createNode(
     resource: 'databasePage',
     operation: 'update',
     pageId: { __rl: true, value: '={{ $json.id }}', mode: 'id' },
-    propertiesUi: {
-      propertyValues: [
-        { key: 'WebflowId|rich_text', textContent: '={{ "" }}' },
-      ],
-    },
+    propertiesUi: { propertyValues: [{ key: 'WebflowId|rich_text', textContent: '={{ "" }}' }] },
     options: {},
   },
-  {
-    id: 'f717125b-70b6-495d-b9fe-ec39bd715a12',
-    typeVersion: 2.2,
-    position: [160, -240],
-    credentials: NOTION_CREDENTIAL,
-  },
+  { typeVersion: 2.2, position: [160, -240], credentials: NOTION_CREDENTIAL },
 );
-unlinkWebflowId.notesInFlow = true;
 unlinkWebflowId.retryOnFail = true;
-unlinkWebflowId.notes = 'BROKEN';
 
 const filter404 = createNode(
   'Filter',
   'n8n-nodes-base.filter',
   {
     conditions: {
-      options: {
-        caseSensitive: true,
-        leftValue: '',
-        typeValidation: 'strict',
-        version: 2,
-      },
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 2 },
       conditions: [
-        {
-          id: '221386e0-fa03-477e-a499-fc126920f0f5',
-          leftValue: '={{ $json.error.cause.status }}',
-          rightValue: 404,
-          operator: { type: 'number', operation: 'equals' },
-        },
+        { id: '221386e0-fa03-477e-a499-fc126920f0f5', leftValue: '={{ $json.error.cause.status }}', rightValue: 404, operator: { type: 'number', operation: 'equals' } },
       ],
       combinator: 'and',
     },
     options: {},
   },
-  {
-    id: '2b6bc5fe-4663-4b79-9c2f-3af4cc006222',
-    typeVersion: 2.2,
-    position: [-40, -60],
-  },
+  { typeVersion: 2.2, position: [-40, -60] },
 );
 
 const unlinkWebflowId1 = createNode(
@@ -578,93 +433,66 @@ const unlinkWebflowId1 = createNode(
   {
     resource: 'databasePage',
     operation: 'update',
-    pageId: {
-      __rl: true,
-      value: '={{ $(\'Still public and publishable?\').item.json.id }}',
-      mode: 'id',
-    },
-    propertiesUi: {
-      propertyValues: [
-        { key: 'WebflowId|rich_text', textContent: '={{ "" }}' },
-      ],
-    },
+    pageId: { __rl: true, value: "={{ $('Still public and publishable?').item.json.id }}", mode: 'id' },
+    propertiesUi: { propertyValues: [{ key: 'WebflowId|rich_text', textContent: '={{ "" }}' }] },
     options: {},
   },
-  {
-    id: '380ea5d3-8cdc-4c14-b5fc-bf277479116d',
-    typeVersion: 2.2,
-    position: [160, -60],
-    credentials: NOTION_CREDENTIAL,
-  },
+  { typeVersion: 2.2, position: [160, -60], credentials: NOTION_CREDENTIAL },
 );
-unlinkWebflowId1.notesInFlow = true;
 unlinkWebflowId1.retryOnFail = true;
-unlinkWebflowId1.notes = 'BROKEN';
 
 // ---------------------------------------------------------------------------
-// Connections
+// Workflow
 // ---------------------------------------------------------------------------
 
-const workflow = createWorkflow('Appearances Management', {
+export default createWorkflow('Appearances Management', {
   nodes: [
-    trigger,
-    alreadyStored,
-    stillPublicAndPublishable,
-    publicAndPublishable,
-    filterCommsType,
-    headSizeCreate,
-    mergeSizeCreate,
-    resolveImageCreate,
-    webflowCreate,
-    storeWebflowId,
-    stillRightCommsType,
-    headSizeUpdate,
-    mergeSizeUpdate,
-    resolveImageUpdate,
-    updateWebflowRecord,
-    deleteFromWebflow,
-    unlinkWebflowId,
-    filter404,
-    unlinkWebflowId1,
+    trigger, alreadyStored, stillPublicAndPublishable, publicAndPublishable,
+    filterCommsType, stillRightCommsType,
+    // create path
+    setImageUrlCreate, ingestCreate, mergeCreate, setPhotoCreate, webflowCreate, storeWebflowId,
+    // update path
+    imageChanged, setImageUrlUpdate, ingestUpdate, mergeUpdate, setPhotoUpdate,
+    updateWebflowWithPhoto, storeKeyUpdate, updateWebflowNoPhoto,
+    // delete path
+    deleteFromWebflow, unlinkWebflowId, filter404, unlinkWebflowId1,
   ],
   connections: [
-    // Entry
     connect(trigger, alreadyStored),
-
-    // Already Stored? true (output 0) → check if still valid
     connect(alreadyStored, stillPublicAndPublishable, 0, 0),
-    // Already Stored? false (output 1) → create path
     connect(alreadyStored, publicAndPublishable, 1, 0),
 
-    // Create path: filter → HEAD + passthrough → merge → create → store ID
+    // Create path
     connect(publicAndPublishable, filterCommsType),
-    connect(filterCommsType, headSizeCreate),
-    connect(headSizeCreate, mergeSizeCreate, 0, 0),
-    connect(filterCommsType, mergeSizeCreate, 0, 1),
-    connect(mergeSizeCreate, resolveImageCreate),
-    connect(resolveImageCreate, webflowCreate),
+    connect(filterCommsType, setImageUrlCreate),
+    connect(setImageUrlCreate, ingestCreate),
+    connect(ingestCreate, mergeCreate, 0, 0),
+    connect(setImageUrlCreate, mergeCreate, 0, 1),
+    connect(mergeCreate, setPhotoCreate),
+    connect(setPhotoCreate, webflowCreate),
     connect(webflowCreate, storeWebflowId, 0, 0),
 
-    // Update path: still public? → still right type? → update
+    // Update path
     connect(stillPublicAndPublishable, stillRightCommsType, 0, 0),
-    // Not public anymore → delete
     connect(stillPublicAndPublishable, deleteFromWebflow, 1, 0),
-
-    // Right comms type → HEAD + passthrough → merge → update
-    connect(stillRightCommsType, headSizeUpdate, 0, 0),
-    connect(headSizeUpdate, mergeSizeUpdate, 0, 0),
-    connect(stillRightCommsType, mergeSizeUpdate, 0, 1),
-    connect(mergeSizeUpdate, resolveImageUpdate),
-    connect(resolveImageUpdate, updateWebflowRecord),
-    // Wrong comms type → delete
+    connect(stillRightCommsType, imageChanged, 0, 0),
     connect(stillRightCommsType, deleteFromWebflow, 1, 0),
 
-    // Delete success → unlink
-    connect(deleteFromWebflow, unlinkWebflowId, 0, 0),
-    // Delete error → filter for 404
-    connect(deleteFromWebflow, filter404, 1, 0),
+    // Update — image changed → ingest → update with photo → store key
+    connect(imageChanged, setImageUrlUpdate, 0, 0),
+    connect(setImageUrlUpdate, ingestUpdate),
+    connect(ingestUpdate, mergeUpdate, 0, 0),
+    connect(setImageUrlUpdate, mergeUpdate, 0, 1),
+    connect(mergeUpdate, setPhotoUpdate),
+    connect(setPhotoUpdate, updateWebflowWithPhoto),
+    connect(updateWebflowWithPhoto, storeKeyUpdate),
 
-    // 404 error → still unlink
+    // Update — image unchanged → update without photo
+    connect(imageChanged, updateWebflowNoPhoto, 1, 0),
+
+    // Delete path
+    connect(deleteFromWebflow, unlinkWebflowId, 0, 0),
+    connect(deleteFromWebflow, filter404, 1, 0),
     connect(filter404, unlinkWebflowId1),
   ],
   settings: {
@@ -673,13 +501,3 @@ const workflow = createWorkflow('Appearances Management', {
   },
   tags: ['website', 'Production'],
 });
-
-// Pad empty output arrays to match server topology
-// (nodes with multiple outputs that have unused slots)
-const c = workflow.connections;
-c['Webflow'].main.push([]);                                 // unused error output
-c['Store Webflow ID in Notion'] = { main: [[], []] };       // leaf node, 2 outputs
-c['Update Webflow Record'] = { main: [[], []] };            // leaf node, 2 outputs
-c['Unlink Webflow ID'] = { main: [[], []] };                // leaf node, 2 outputs
-
-export default workflow;

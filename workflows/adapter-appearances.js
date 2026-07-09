@@ -29,6 +29,9 @@ export default createAdapter({
     { name: 'Shareable Link', value: '={{ $json.property_shareable_link }}' },
     { name: 'Name', value: '={{ $json.property_name }}' },
     { name: 'Event image', value: '={{ $json.property_event_image }}', type: 'array' },
+    // Fingerprint of the last-ingested image (Notion signed-URL path minus query
+    // string). Lets Appearances Management skip re-uploading an unchanged image.
+    { name: 'Webflow Image Key', value: '={{ $json.property_webflow_image_key }}' },
   ],
   noticeEvents: [
     { type: 'data_source.schema_updated', message: 'Appearances database schema was changed in Notion. Review the schema and update workflows if needed.' },

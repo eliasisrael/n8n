@@ -1,5 +1,61 @@
 import { createWorkflow, createNode, connect } from '../lib/workflow.js';
 
+// Route the product thumbnail through the shared Webflow Image Ingest
+// sub-workflow so oversized thumbnails are resized and become permanent
+// Webflow-hosted assets. `thumbnail` is a flat URL string (not an array), so
+// Plan/Apply treat it as a string. Both the update and create paths set it.
+const INGEST_WORKFLOW_ID = 'ukgsdamtBYr76U2i';
+
+const PLAN_IMAGES_CODE = `
+const r = $json;
+const plan = [];
+if (r.thumbnail) plan.push({ field: 'thumbnail', url: r.thumbnail });
+return { json: { ...r, _imgPlan: plan } };
+`.trim();
+
+const EMIT_IMAGES_CODE = `
+const rec = $input.first().json;
+const plan = rec._imgPlan || [];
+return plan.map(p => ({ json: { imageUrl: p.url } }));
+`.trim();
+
+function applyHostedCode(planNode) {
+  return `
+const rec = $('${planNode}').first().json;
+const plan = rec._imgPlan || [];
+const hosted = $input.all().map(it => it.json.hostedUrl);
+const out = { ...rec };
+for (let i = 0; i < plan.length; i++) { if (hosted[i]) out[plan[i].field] = hosted[i]; }
+delete out._imgPlan;
+return { json: out };
+`.trim();
+}
+
+function planNode(name, position) {
+  return createNode(name, 'n8n-nodes-base.code', { mode: 'runOnceForEachItem', jsCode: PLAN_IMAGES_CODE }, { typeVersion: 2, position });
+}
+function emitNode(name, position) {
+  return createNode(name, 'n8n-nodes-base.code', { mode: 'runOnceForAllItems', jsCode: EMIT_IMAGES_CODE }, { typeVersion: 2, position });
+}
+function ingestNode(name, position) {
+  const n = createNode(name, 'n8n-nodes-base.executeWorkflow', { workflowId: { __rl: true, mode: 'id', value: INGEST_WORKFLOW_ID }, options: {} }, { typeVersion: 1.2, position });
+  n.retryOnFail = true;
+  return n;
+}
+function applyNode(name, planNodeName, position) {
+  return createNode(name, 'n8n-nodes-base.code', { mode: 'runOnceForAllItems', jsCode: applyHostedCode(planNodeName) }, { typeVersion: 2, position });
+}
+
+const planUpdate = planNode('Plan Images (Update)', [-860, -20]);
+const emitUpdate = emitNode('Emit Image Items (Update)', [-820, -20]);
+const ingestUpdate = ingestNode('Ingest Images (Update)', [-780, -20]);
+const applyUpdate = applyNode('Apply Hosted (Update)', 'Plan Images (Update)', [-750, -20]);
+
+const planCreate = planNode('Plan Images (Create)', [-860, 180]);
+const emitCreate = emitNode('Emit Image Items (Create)', [-820, 180]);
+const ingestCreate = ingestNode('Ingest Images (Create)', [-780, 180]);
+const applyCreate = applyNode('Apply Hosted (Create)', 'Plan Images (Create)', [-750, 180]);
+
 const trigger = createNode('When Executed by Another Workflow', 'n8n-nodes-base.executeWorkflowTrigger', {
   workflowInputs: {
     values: [
@@ -196,12 +252,26 @@ const stickyNote1 = createNode('Sticky Note1', 'n8n-nodes-base.stickyNote', {
 });
 
 export default createWorkflow('Products Management', {
-  nodes: [trigger, filter, alreadyStored, updateProduct, createProduct, storeWebflowId, stickyNote, stickyNote1],
+  nodes: [
+    trigger, filter, alreadyStored, updateProduct, createProduct, storeWebflowId, stickyNote, stickyNote1,
+    planUpdate, emitUpdate, ingestUpdate, applyUpdate,
+    planCreate, emitCreate, ingestCreate, applyCreate,
+  ],
   connections: [
     connect(trigger, filter),
     connect(filter, alreadyStored),
-    connect(alreadyStored, updateProduct, 0),
-    connect(alreadyStored, createProduct, 1),
+    // Update path: resolve thumbnail → update
+    connect(alreadyStored, planUpdate, 0),
+    connect(planUpdate, emitUpdate),
+    connect(emitUpdate, ingestUpdate),
+    connect(ingestUpdate, applyUpdate),
+    connect(applyUpdate, updateProduct),
+    // Create path: resolve thumbnail → create → store id
+    connect(alreadyStored, planCreate, 1),
+    connect(planCreate, emitCreate),
+    connect(emitCreate, ingestCreate),
+    connect(ingestCreate, applyCreate),
+    connect(applyCreate, createProduct),
     connect(createProduct, storeWebflowId),
   ],
   settings: { executionOrder: 'v1' },

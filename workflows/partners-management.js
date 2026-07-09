@@ -1,5 +1,63 @@
 import { createWorkflow, createNode, connect } from '../lib/workflow.js';
 
+// Route the partner Logo through the shared Webflow Image Ingest sub-workflow
+// (Plan → Emit → Ingest → Apply) so oversized logos are resized and become
+// permanent Webflow-hosted assets. Both the create and update paths set the
+// logo (the update path previously set only `name`, so partner logo edits
+// never propagated — now they do).
+const INGEST_WORKFLOW_ID = 'ukgsdamtBYr76U2i';
+
+const PLAN_IMAGES_CODE = `
+const r = $json;
+const plan = [];
+const logo = Array.isArray(r.Logo) ? r.Logo[0] : r.Logo;
+if (logo) plan.push({ field: 'Logo', url: logo });
+return { json: { ...r, _imgPlan: plan } };
+`.trim();
+
+const EMIT_IMAGES_CODE = `
+const rec = $input.first().json;
+const plan = rec._imgPlan || [];
+return plan.map(p => ({ json: { imageUrl: p.url } }));
+`.trim();
+
+function applyHostedCode(planNode) {
+  return `
+const rec = $('${planNode}').first().json;
+const plan = rec._imgPlan || [];
+const hosted = $input.all().map(it => it.json.hostedUrl);
+const out = { ...rec };
+for (let i = 0; i < plan.length; i++) { if (hosted[i]) out[plan[i].field] = [hosted[i]]; }
+delete out._imgPlan;
+return { json: out };
+`.trim();
+}
+
+function planNode(name, position) {
+  return createNode(name, 'n8n-nodes-base.code', { mode: 'runOnceForEachItem', jsCode: PLAN_IMAGES_CODE }, { typeVersion: 2, position });
+}
+function emitNode(name, position) {
+  return createNode(name, 'n8n-nodes-base.code', { mode: 'runOnceForAllItems', jsCode: EMIT_IMAGES_CODE }, { typeVersion: 2, position });
+}
+function ingestNode(name, position) {
+  const n = createNode(name, 'n8n-nodes-base.executeWorkflow', { workflowId: { __rl: true, mode: 'id', value: INGEST_WORKFLOW_ID }, options: {} }, { typeVersion: 1.2, position });
+  n.retryOnFail = true;
+  return n;
+}
+function applyNode(name, planNodeName, position) {
+  return createNode(name, 'n8n-nodes-base.code', { mode: 'runOnceForAllItems', jsCode: applyHostedCode(planNodeName) }, { typeVersion: 2, position });
+}
+
+const planUpdate = planNode('Plan Images (Update)', [-720, 20]);
+const emitUpdate = emitNode('Emit Image Items (Update)', [-700, 20]);
+const ingestUpdate = ingestNode('Ingest Images (Update)', [-680, 20]);
+const applyUpdate = applyNode('Apply Hosted (Update)', 'Plan Images (Update)', [-640, 20]);
+
+const planCreate = planNode('Plan Images (Create)', [-800, 620]);
+const emitCreate = emitNode('Emit Image Items (Create)', [-720, 620]);
+const ingestCreate = ingestNode('Ingest Images (Create)', [-660, 620]);
+const applyCreate = applyNode('Apply Hosted (Create)', 'Plan Images (Create)', [-620, 620]);
+
 // --- Nodes ---
 
 const trigger = createNode(
@@ -87,10 +145,11 @@ const updateWebflow = createNode(
     siteId: '66022db75af9853636d1ce23',
     collectionId: '6609a26f5e9084457b133b0f',
     itemId: '={{ $json.WebflowId }}',
-    live: '',
+    live: true,
     fieldsUi: {
       fieldValues: [
         { fieldId: 'name', fieldValue: '={{ $json.Name }}' },
+        { fieldId: 'logo', fieldValue: '={{ ($json.Logo || [])[0] }}' },
       ],
     },
   },
@@ -190,10 +249,10 @@ const webflowCreate = createNode(
     operation: 'create',
     siteId: '66022db75af9853636d1ce23',
     collectionId: '6609a26f5e9084457b133b0f',
-    live: '',
+    live: true,
     fieldsUi: {
       fieldValues: [
-        { fieldId: 'logo', fieldValue: '={{ $json.Logo[0] }}' },
+        { fieldId: 'logo', fieldValue: '={{ ($json.Logo || [])[0] }}' },
         { fieldId: 'name', fieldValue: '={{ $json.Name }}' },
         { fieldId: 'site', fieldValue: '={{ $json.Site }}' },
         { fieldId: 'notionid', fieldValue: '={{ $json.id }}' },
@@ -248,15 +307,33 @@ export default createWorkflow('Partners Management', {
     filterPublishable,
     webflowCreate,
     storeWebflowId,
+    planUpdate,
+    emitUpdate,
+    ingestUpdate,
+    applyUpdate,
+    planCreate,
+    emitCreate,
+    ingestCreate,
+    applyCreate,
   ],
   connections: [
     connect(trigger, alreadyStored),
     connect(alreadyStored, ifPublishable, 0),        // true: has WebflowId
     connect(alreadyStored, filterPublishable, 1),     // false: no WebflowId
-    connect(ifPublishable, updateWebflow, 0),         // true: publishable → update
+    // Publishable → resolve logo image → update
+    connect(ifPublishable, planUpdate, 0),
+    connect(planUpdate, emitUpdate),
+    connect(emitUpdate, ingestUpdate),
+    connect(ingestUpdate, applyUpdate),
+    connect(applyUpdate, updateWebflow),
     connect(ifPublishable, deletePartner, 1),         // false: not publishable → delete
     connect(deletePartner, unlinkWebflowId),
-    connect(filterPublishable, webflowCreate),
+    // Create path: resolve logo image → create → store id
+    connect(filterPublishable, planCreate),
+    connect(planCreate, emitCreate),
+    connect(emitCreate, ingestCreate),
+    connect(ingestCreate, applyCreate),
+    connect(applyCreate, webflowCreate),
     connect(webflowCreate, storeWebflowId),
   ],
   settings: { executionOrder: 'v1' },
