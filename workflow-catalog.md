@@ -27,6 +27,7 @@ These server workflows have a corresponding `.js` file in `workflows/`.
 | backfill-notionid-links.json | Backfill NOTIONID Links | backfill-notionid-links.js | |
 | close-stale-task.json | Close Stale Task | close-stale-task.js | |
 | contact-updates-from-notion.json | Contact Updates from Notion | contact-updates-from-notion.js | |
+| contacts-management.json | Contacts Management | contacts-management.js | Webflow form → validated contact → Notion + Mailchimp |
 | create-or-update-mailchimp-record.json | Create or Update Mailchimp Record | create-or-update-mailchimp-record.js | |
 | email-activity-log.json | Email Activity Log | email-activity-log.js | |
 | find-duplicate-contacts.json | Find Duplicate Contacts | find-duplicate-contacts.js | |
@@ -96,7 +97,6 @@ These workflows are deprecated or no longer needed. Can be deactivated and remov
 | my-workflow-2.json | My workflow 2 |
 | my-workflow-3.json | My workflow 3 |
 | my-workflow-4.json | My workflow 4 |
-| contacts-management.json | Contacts Management |
 | refresh-all-products.json | Refresh All Products |
 | watch-for-cloud-gateway-fiber.json | Watch for Cloud Gateway Fiber |
 

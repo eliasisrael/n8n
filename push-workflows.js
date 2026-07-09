@@ -68,8 +68,9 @@ async function fetchAllWorkflows() {
 // appears in GET responses and the JSON import format.
 const ALLOWED_NODE_KEYS = new Set([
   'id', 'name', 'type', 'typeVersion', 'position', 'parameters',
-  'credentials', 'disabled', 'onError', 'retryOnFail', 'executeOnce',
-  'continueOnFail', 'alwaysOutputData', 'notesInFlow', 'notes', 'webhookId',
+  'credentials', 'disabled', 'onError', 'retryOnFail', 'maxTries',
+  'waitBetweenTries', 'executeOnce', 'continueOnFail', 'alwaysOutputData',
+  'notesInFlow', 'notes', 'webhookId',
 ]);
 
 function cleanNode(node) {
