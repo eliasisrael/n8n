@@ -196,7 +196,7 @@ const storeWebflowId = createNode(
   {
     resource: 'databasePage',
     operation: 'update',
-    pageId: { __rl: true, value: "={{ $('Filter: Publishable').item.json.id }}", mode: 'id' },
+    pageId: { __rl: true, value: "={{ $('Filter: Publishable').first().json.id }}", mode: 'id' },
     propertiesUi: { propertyValues: [{ key: 'WebflowId|rich_text', textContent: '={{ $json.id }}' }] },
     options: {},
   },

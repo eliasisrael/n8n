@@ -209,7 +209,7 @@ const storeWebflowId = createNode('Store Webflow ID in Notion', 'n8n-nodes-base.
   operation: 'update',
   pageId: {
     __rl: true,
-    value: "={{ $('When Executed by Another Workflow').item.json.notion_id }}",
+    value: "={{ $('When Executed by Another Workflow').first().json.notion_id }}",
     mode: 'id',
   },
   propertiesUi: {

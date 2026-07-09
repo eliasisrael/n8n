@@ -276,7 +276,7 @@ const storeWebflowId = createNode(
     operation: 'update',
     pageId: {
       __rl: true,
-      value: "={{ $('Filter: Publishable').item.json.id }}",
+      value: "={{ $('Filter: Publishable').first().json.id }}",
       mode: 'id',
     },
     propertiesUi: {
