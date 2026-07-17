@@ -64,47 +64,17 @@ return out;
 `.trim();
 
 // ---------------------------------------------------------------------------
-// Code: POST the bytes to the Webflow-provided presigned S3 endpoint.
-// Built as a manual multipart body so the uploadDetails fields are sent in the
-// order Webflow returns them, with the file part LAST (required by S3).
-// S3 presigned POST needs no auth header — the signature is in the fields.
+// Code: emit { hostedUrl } per image, position-matched to Merge Asset + Binary.
+// The actual S3 upload is now a dedicated HTTP Request node ("Upload to S3")
+// that streams the binary from the store. The old Code-node upload built the
+// whole multipart body in memory and POSTed it via this.helpers.httpRequest —
+// under n8n's task-runner architecture that transfers the multi-MB body across
+// the runner IPC boundary, which hung to the 300s task timeout. Keeping this
+// step as a Code node is fine: it touches no binary and returns instantly.
 // ---------------------------------------------------------------------------
-const UPLOAD_S3_CODE = `
-const crypto = require('crypto');
-const items = $input.all();
-const out = [];
-for (let i = 0; i < items.length; i++) {
-  const buf = await this.helpers.getBinaryDataBuffer(i, 'data');
-  const j = items[i].json || {};
-  const uploadUrl = j.uploadUrl;
-  const details = j.uploadDetails || {};
-  if (!uploadUrl) throw new Error('Missing uploadUrl from Create Webflow Asset response (item ' + i + ')');
-
-  const CRLF = '\\r\\n';
-  const boundary = '----n8nWF' + crypto.randomBytes(12).toString('hex');
-  const chunks = [];
-  for (const [k, v] of Object.entries(details)) {
-    chunks.push(Buffer.from('--' + boundary + CRLF + 'Content-Disposition: form-data; name="' + k + '"' + CRLF + CRLF + String(v) + CRLF));
-  }
-  const fileName = j.fileName || 'upload';
-  const contentType = j.contentType || details['content-type'] || 'application/octet-stream';
-  chunks.push(Buffer.from('--' + boundary + CRLF + 'Content-Disposition: form-data; name="file"; filename="' + fileName + '"' + CRLF + 'Content-Type: ' + contentType + CRLF + CRLF));
-  chunks.push(buf);
-  chunks.push(Buffer.from(CRLF + '--' + boundary + '--' + CRLF));
-  const body = Buffer.concat(chunks);
-
-  const resp = await this.helpers.httpRequest({
-    method: 'POST',
-    url: uploadUrl,
-    body,
-    headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary },
-    returnFullResponse: true,
-    json: false,
-  });
-
-  out.push({ json: { hostedUrl: j.hostedUrl, assetId: j.id, fileName, s3Status: resp.statusCode } });
-}
-return out;
+const EMIT_HOSTED_CODE = `
+const merged = $('Merge Asset + Binary').all();
+return merged.map(m => ({ json: { hostedUrl: m.json.hostedUrl, assetId: m.json.id, fileName: m.json.fileName } }));
 `.trim();
 
 // ---------------------------------------------------------------------------
@@ -230,11 +200,47 @@ const mergeAsset = createNode(
   { position: [700, 100], typeVersion: 3 },
 );
 
+// Stream the bytes to the Webflow-provided presigned S3 endpoint via a real
+// HTTP Request node (runs in the main process, streams the binary from the
+// store — no multi-MB body across the task-runner IPC boundary). The presigned
+// POST fields are a fixed set from Webflow; the file part MUST be last.
 const uploadS3 = createNode(
-  'Upload Bytes to S3',
+  'Upload to S3',
+  'n8n-nodes-base.httpRequest',
+  {
+    method: 'POST',
+    url: '={{ $json.uploadUrl }}',
+    sendBody: true,
+    contentType: 'multipart-form-data',
+    bodyParameters: {
+      parameters: [
+        { name: 'acl', value: '={{ $json.uploadDetails.acl }}' },
+        { name: 'bucket', value: '={{ $json.uploadDetails.bucket }}' },
+        { name: 'X-Amz-Algorithm', value: '={{ $json.uploadDetails["X-Amz-Algorithm"] }}' },
+        { name: 'X-Amz-Credential', value: '={{ $json.uploadDetails["X-Amz-Credential"] }}' },
+        { name: 'X-Amz-Date', value: '={{ $json.uploadDetails["X-Amz-Date"] }}' },
+        { name: 'key', value: '={{ $json.uploadDetails.key }}' },
+        { name: 'Policy', value: '={{ $json.uploadDetails.Policy }}' },
+        { name: 'X-Amz-Signature', value: '={{ $json.uploadDetails["X-Amz-Signature"] }}' },
+        { name: 'success_action_status', value: '={{ $json.uploadDetails.success_action_status }}' },
+        { name: 'content-type', value: '={{ $json.uploadDetails["content-type"] }}' },
+        { name: 'Cache-Control', value: '={{ $json.uploadDetails["Cache-Control"] }}' },
+        { parameterType: 'formBinaryData', name: 'file', inputDataFieldName: 'data' },
+      ],
+    },
+    options: { timeout: 60000 },
+  },
+  { position: [920, 100], typeVersion: 4.2 },
+);
+uploadS3.retryOnFail = true;
+uploadS3.maxTries = 3;
+uploadS3.waitBetweenTries = 3000;
+
+const emitHosted = createNode(
+  'Emit Hosted URL',
   'n8n-nodes-base.code',
-  { mode: 'runOnceForAllItems', jsCode: UPLOAD_S3_CODE },
-  { position: [920, 100], typeVersion: 2 },
+  { mode: 'runOnceForAllItems', jsCode: EMIT_HOSTED_CODE },
+  { position: [1140, 100], typeVersion: 2 },
 );
 
 // ---------------------------------------------------------------------------
@@ -252,6 +258,7 @@ export default createWorkflow('Webflow Image Ingest', {
     createAsset,
     mergeAsset,
     uploadS3,
+    emitHosted,
   ],
   connections: [
     connect(execTrigger, normalize),
@@ -264,6 +271,7 @@ export default createWorkflow('Webflow Image Ingest', {
     connect(createAsset, mergeAsset, 0, 0),
     connect(prepAsset, mergeAsset, 0, 1),
     connect(mergeAsset, uploadS3),
+    connect(uploadS3, emitHosted),
   ],
   settings: {
     callerPolicy: 'workflowsFromSameOwner',
