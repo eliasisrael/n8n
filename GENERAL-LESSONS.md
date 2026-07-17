@@ -139,6 +139,13 @@ operator: { type: 'dateTime', operation: 'afterOrEquals' },
 
 ## Code Nodes
 
+### Prefer native nodes — Code nodes run in the task runner (300s timeout + IPC)
+n8n's newer task-runner architecture runs Code nodes in a **separate process** with a **300-second hard timeout** (`N8N_RUNNERS_TASK_TIMEOUT`), and binary/HTTP payloads must cross an **IPC boundary** to reach it. Consequences:
+- A Code node that calls `this.helpers.httpRequest` with a real (multi-MB) body transfers that body over runner IPC — it can **stall and hang to the 300s timeout**, which n8n then reports as `error` ("Task execution timed out after 300 seconds") or, if the runner is killed, a `crashed` execution mislabeled **"possible out-of-memory issue."** (This was the Webflow image-ingest failure after an n8n upgrade — a hang, *not* OOM.)
+- The fix and the rule: **do HTTP in an HTTP Request node and binary/file uploads in a node that streams from the binary store** (HTTP Request with `formBinaryData`, `parameterType: 'formBinaryData'`, `inputDataFieldName`). These run in the main process, stream the binary, and honor a real request `timeout` — no IPC body transfer, no task-runner timeout.
+- General rule: **Code nodes are a last resort.** Use Set/Edit Fields to reshape, Filter/IF to gate, Merge to combine, Switch to route, and service/HTTP nodes to call APIs. Reserve Code nodes for pure, fast, in-memory JS with no native equivalent — and keep them off the binary/HTTP path.
+- Reading binary in a Code node (`getBinaryDataBuffer`) is tolerable for small work (e.g., an md5 hash) but still crosses IPC; if a Code node that only reads binary starts timing out on large inputs, that's the same task-runner interaction — move it to a native node.
+
 ### Code node execution mode matters
 - `runOnceForAllItems` processes all items in one execution; use `$('Node').first().json` and `$input.first().json`; return an array `[{ json: ... }]`
 - `runOnceForEachItem` processes each item individually; use `$json` for the current item and `$('Node').item.json` for paired items; return a single `{ json: ... }` object

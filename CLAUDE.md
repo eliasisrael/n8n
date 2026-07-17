@@ -212,6 +212,11 @@ The `upsert-contact` sub-workflow implements the standard contact upsert:
 Other workflows that modify contacts should call the upsert sub-workflow rather than writing to Notion directly.
 
 ## Guidelines for Claude
+- **HARD RULE — never use a Code node when a purpose-built node fits.** `n8n-nodes-base.code` is the last resort, not the default. Code nodes run in n8n's isolated **task runner**: a 300s hard timeout, and binary/HTTP payloads are shuttled across an IPC boundary — so a Code node doing HTTP, binary/file work, or anything slow **will hang and time out** (this caused the Webflow image-ingest 300s crashes). Specifically:
+  - **HTTP calls → HTTP Request node.** Never `this.helpers.httpRequest` inside a Code node for real payloads — the body crosses runner IPC and stalls.
+  - **Binary/file uploads → a node that streams from the binary store** (HTTP Request with `formBinaryData`), never a Code node building `Buffer.concat`.
+  - **Reshape fields → Set/Edit Fields; filter → Filter/IF; combine → Merge; route → Switch; call APIs → the service node or HTTP Request.**
+  - Reserve Code nodes for pure, fast, in-memory JS with no native equivalent — and keep them off the binary/HTTP path entirely.
 - **Always check both lessons files** before designing solutions:
   - **`GENERAL-LESSONS.md`** — general n8n workflow knowledge (node parameter formats, import quirks, integration patterns). This file is portable across projects.
   - **`LESSONS.md`** — project-specific knowledge (server credentials, workflow-specific layouts, future work plans)
