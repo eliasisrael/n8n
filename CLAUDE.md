@@ -5,7 +5,7 @@ A Node.js project for programmatically defining n8n workflows in JavaScript. Eac
 
 ## Target Environment
 - **n8n server**: self-hosted at `https://n8n.vennfactory.com`
-- **n8n version**: **2.x** (upgraded ~2026-07-17; exact patch number TBC — this file previously said 1.122.5, which is wrong and misled debugging). Confirmed by behaviour: the server exposes the 2.x `activeVersionId` / `versionCounter` / `activeVersion` draft-publish model, which 1.122.5 does not have.
+- **n8n version**: **2.8.4** (as of 2026-07-18; upgraded from the 1.x line ~2026-07-17). This file previously said 1.122.5 — that was stale and actively misled debugging, so keep it current after any upgrade.
 - **Publish model**: workflows have a **draft** (`versionId`) and a **published** version (`activeVersionId`). **Production runs the published version; manual/editor runs use the draft.** Sub-workflows and error workflows must be published or their callers fail with "Workflow is not active and cannot be executed". See `GENERAL-LESSONS.md` → "Deploying via the Public API".
 - **Full host control**: we own the server and can install any packages or community nodes
 
