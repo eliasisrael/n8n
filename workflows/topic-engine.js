@@ -68,45 +68,77 @@ const downloadTopicsLog = createNode(
 );
 downloadTopicsLog.continueOnFail = true;
 
-const parseTopicsLog = createNode(
-  'Parse Topics Log',
-  'n8n-nodes-base.code',
+// Parse the topics-log CSV into the last-60-days title list using native nodes
+// (no Code node): Extract from File (csv) → Filter (date within 60d) →
+// Aggregate (title → recentTitles). Code nodes are barred from binary work —
+// they run in the task runner and shuttle the binary across an IPC boundary,
+// which hangs to the 300s timeout. These native nodes stream/process in-process.
+
+// 1) Parse the CSV binary into one item per row (columns: date, title, ...).
+//    continueOnFail + alwaysOutputData so a failed/first-run download (no binary)
+//    yields no rows rather than erroring.
+const extractTopicsLog = createNode(
+  'Extract Topics Log',
+  'n8n-nodes-base.extractFromFile',
   {
-    mode: 'runOnceForAllItems',
-    jsCode: `\
-// Parse the topics-log CSV binary and extract titles from the last 60 days.
-// If the CSV download failed (first run), output an empty array.
-const item = $input.first();
-let recentTitles = [];
-
-try {
-  const binaryKey = Object.keys(item.binary || {})[0];
-  if (binaryKey) {
-    const buffer = await this.helpers.getBinaryDataBuffer(0, binaryKey);
-    const csvText = buffer.toString('utf8');
-    const lines = csvText.split('\\n').filter(l => l.trim());
-    // Skip header row
-    const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
-    for (let i = 1; i < lines.length; i++) {
-      const cols = lines[i].split(',');
-      const dateStr = (cols[0] || '').trim();
-      const title = (cols[1] || '').trim();
-      if (dateStr && title) {
-        const rowDate = new Date(dateStr);
-        if (rowDate >= sixtyDaysAgo) {
-          recentTitles.push(title);
-        }
-      }
-    }
-  }
-} catch (e) {
-  // If parsing fails, proceed with empty list
-}
-
-return [{ json: { recentTitles } }];`,
+    operation: 'csv',
+    options: {},
   },
-  { position: [600, 640], typeVersion: 2 },
+  { position: [600, 640], typeVersion: 1 },
 );
+extractTopicsLog.continueOnFail = true;
+extractTopicsLog.alwaysOutputData = true;
+
+// 2) Keep only rows whose date is within the last 60 days. `date` is written as
+//    yyyy-MM-dd (ISO, Luxon-parseable); loose type validation lets the string
+//    coerce to a DateTime for comparison.
+const filterRecentTopics = createNode(
+  'Filter Recent Topics',
+  'n8n-nodes-base.filter',
+  {
+    conditions: {
+      options: {
+        caseSensitive: true,
+        leftValue: '',
+        typeValidation: 'loose',
+        version: 2,
+      },
+      conditions: [
+        {
+          id: crypto.randomUUID(),
+          leftValue: '={{ $json.date }}',
+          rightValue: '={{ $now.minus({ days: 60 }).toISO() }}',
+          operator: {
+            type: 'dateTime',
+            operation: 'afterOrEquals',
+          },
+        },
+      ],
+      combinator: 'and',
+    },
+    options: {},
+  },
+  { position: [850, 640], typeVersion: 2.2 },
+);
+
+// 3) Collapse the surviving rows to one item { recentTitles: [ ...title ] }.
+//    alwaysOutputData so an empty input still yields { recentTitles: [] }.
+//    Output contract matches the old Parse Topics Log node exactly.
+const aggregateRecentTitles = createNode(
+  'Aggregate Recent Titles',
+  'n8n-nodes-base.aggregate',
+  {
+    aggregate: 'aggregateIndividualFields',
+    fieldsToAggregate: {
+      fieldToAggregate: [
+        { fieldToAggregate: 'title', renameField: true, outputFieldName: 'recentTitles' },
+      ],
+    },
+    options: {},
+  },
+  { position: [1100, 640], typeVersion: 1 },
+);
+aggregateRecentTitles.alwaysOutputData = true;
 
 // ---------------------------------------------------------------------------
 // Stage 1: Source Collection
@@ -395,10 +427,10 @@ const allItems = $input.all();
 // Get all fresh items (they come through from the merge)
 const freshItems = allItems.map(i => i.json);
 
-// Get recent titles from Parse Topics Log node
+// Get recent titles from the Aggregate Recent Titles node
 let recentTitles = [];
 try {
-  const logData = $('Parse Topics Log').first().json;
+  const logData = $('Aggregate Recent Titles').first().json;
   recentTitles = logData.recentTitles || [];
 } catch (e) {
   // First run or parse failed — no titles to check against
@@ -1071,7 +1103,7 @@ uploadUpdatedCsv.retryOnFail = true;
 export default createWorkflow('LinkedIn Daily Topic Engine', {
   nodes: [
     // Stage 0
-    scheduleTrigger, downloadTopicsLog, parseTopicsLog,
+    scheduleTrigger, downloadTopicsLog, extractTopicsLog, filterRecentTopics, aggregateRecentTitles,
     // Stage 1
     buildSourceList, splitBySource, fetchReddit, fetchOtherSources,
     mergeRedditData, mergeOtherData, combineAllSources, normalizeAndDedup,
@@ -1090,7 +1122,9 @@ export default createWorkflow('LinkedIn Daily Topic Engine', {
     // Stage 0: Trigger → parallel branches
     connect(scheduleTrigger, buildSourceList),           // Branch 1: sources
     connect(scheduleTrigger, downloadTopicsLog),          // Branch 2: topics log
-    connect(downloadTopicsLog, parseTopicsLog),
+    connect(downloadTopicsLog, extractTopicsLog),
+    connect(extractTopicsLog, filterRecentTopics),
+    connect(filterRecentTopics, aggregateRecentTitles),
 
     // Stage 1: Source collection (split Reddit with OAuth vs others without)
     connect(buildSourceList, splitBySource),
@@ -1109,7 +1143,7 @@ export default createWorkflow('LinkedIn Daily Topic Engine', {
 
     // Stage 2: Novelty check
     connect(normalizeAndDedup, mergeForNovelty, 0, 0),    // Fresh items → input 0
-    connect(parseTopicsLog, mergeForNovelty, 0, 1),       // Recent titles → input 1
+    connect(aggregateRecentTitles, mergeForNovelty, 0, 1), // Recent titles → input 1
     connect(mergeForNovelty, checkNovelty),
 
     // Stage 2: LLM scoring (via HTTP Request)
