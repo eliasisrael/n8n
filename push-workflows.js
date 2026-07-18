@@ -97,6 +97,39 @@ function toApiBody(wf) {
   };
 }
 
+/**
+ * Verify a push actually reached production.
+ *
+ * n8n 2.x splits each workflow into a draft (`versionId`) and a published
+ * version (`activeVersionId`); PRODUCTION RUNS THE PUBLISHED ONE. A PUT only
+ * auto-publishes if the workflow is *already* published — otherwise it writes a
+ * draft that silently never goes live. (This bit us: a fix sat unpublished and
+ * callers kept failing for 10 minutes after a "successful" push.)
+ *
+ * Returns 'published' | 'draft-only' | 'drift' | 'unknown'.
+ */
+async function publishState(id) {
+  const res = await fetch(new URL(`/api/v1/workflows/${id}`, BASE_URL), {
+    headers: { 'X-N8N-API-KEY': API_KEY },
+  });
+  if (!res.ok) return { state: 'unknown' };
+  const w = await res.json();
+  if (w.versionId === undefined && w.activeVersionId === undefined) return { state: 'unknown' };
+  if (!w.activeVersionId) return { state: 'draft-only', w };
+  return { state: w.activeVersionId === w.versionId ? 'published' : 'drift', w };
+}
+
+/** Publish (n8n's /activate endpoint is the publish action). */
+async function publishWorkflow(id) {
+  const res = await fetch(new URL(`/api/v1/workflows/${id}/activate`, BASE_URL), {
+    method: 'POST',
+    headers: { 'X-N8N-API-KEY': API_KEY, 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  if (!res.ok) throw new Error(`Publish failed (${res.status}): ${await res.text()}`);
+  return res.json();
+}
+
 /** Create a new workflow on the server. */
 async function createWorkflow(wf) {
   const res = await fetch(new URL('/api/v1/workflows', BASE_URL), {
@@ -138,6 +171,7 @@ async function updateWorkflow(id, wf) {
 // ---------------------------------------------------------------------------
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
+const doPublish = args.includes('--publish');
 const workflowFlag = args.indexOf('--workflow');
 const targetName = workflowFlag >= 0 ? args[workflowFlag + 1] : null;
 
@@ -178,6 +212,38 @@ console.log(`Found ${serverWorkflows.length} workflow(s) on server.\n`);
 let created = 0;
 let updated = 0;
 let errors = 0;
+let unpublished = 0;
+
+/**
+ * Report (and optionally fix) whether the push actually went live.
+ * With --publish, publishes anything left as a draft.
+ */
+async function reportPublishState(id, name) {
+  let { state } = await publishState(id);
+
+  if (state !== 'published' && doPublish) {
+    try {
+      await publishWorkflow(id);
+      ({ state } = await publishState(id));
+      if (state === 'published') {
+        console.log(`      ✓ published`);
+        return;
+      }
+    } catch (err) {
+      console.error(`      publish failed: ${err.message}`);
+    }
+  }
+
+  if (state === 'published') return;             // live and current — nothing to say
+  if (state === 'unknown') return;               // pre-2.x server, no publish model
+
+  unpublished++;
+  const why = state === 'draft-only'
+    ? 'never published — production will NOT run it'
+    : 'has unpublished changes — production still runs the OLD version';
+  console.warn(`      !! NOT LIVE: "${name}" ${why}`);
+  console.warn(`         fix: node activate-workflows.js --workflow <name>   (or re-run push with --publish)`);
+}
 
 for (const file of files) {
   const wf = JSON.parse(readFileSync(join(OUTPUT_DIR, file), 'utf8'));
@@ -194,6 +260,7 @@ for (const file of files) {
     try {
       const result = await updateWorkflow(existing.id, wf);
       console.log(`  ${file} → updated ${result.id} ("${wf.name}")`);
+      await reportPublishState(result.id, wf.name);
       updated++;
     } catch (err) {
       console.error(`  ${file} → ERROR: ${err.message}`);
@@ -209,6 +276,7 @@ for (const file of files) {
     try {
       const result = await createWorkflow(wf);
       console.log(`  ${file} → created ${result.id} ("${wf.name}")`);
+      await reportPublishState(result.id, wf.name);
       created++;
     } catch (err) {
       console.error(`  ${file} → ERROR: ${err.message}`);

@@ -669,6 +669,53 @@ webhook.webhookId = 'my-hook';  // or a UUID — must match if you change `path`
 
 `webhookId` can be the same string as `path` (the adapter workflows all do this), or a UUID. They just need to be present and consistent. After fixing, deactivate → re-push → re-activate the workflow so n8n's webhook registry picks up the change.
 
+### Sub-workflows MUST be published (n8n 2.x draft/publish model)
+In n8n 2.x the `active` boolean was replaced by a nullable **`activeVersionId`**. Edits autosave into a **draft**; only *publishing* sets `activeVersionId`, and **production executions run the published version, not the latest draft**.
+
+For sub-workflows this is a behavioural change with teeth. In 1.x an inactive sub-workflow called via Execute Workflow ran fine — there was no publish concept. In 2.x, a production call resolves the sub-workflow via `getPublishedWorkflowData()`, which **throws when there is no published version**:
+
+```
+Workflow is not active and cannot be executed.
+```
+
+The error surfaces on the **caller's** Execute Workflow node, and the sub-workflow produces **no execution record at all** — so it looks like the sub-workflow is fine and the caller is at fault. Diagnose by listing the sub-workflow's executions and checking `mode`: zero `mode=integrated` runs means it is never starting. Then check `activeVersionId` on the sub-workflow — `null` is the smoking gun.
+
+Note the asymmetry that makes this easy to miss: **manual and chat executions deliberately use the draft** (`isManualOrChatExecution` → `getDraftWorkflowData()`), so a sub-workflow can test green in the editor while every production caller fails. Error workflows have the same requirement (n8n PR #27196 fixed them running draft nodes).
+
+Real incident: `Webflow Image Ingest` sat unpublished (`activeVersionId: null`) after an n8n upgrade, and every caller (Appearances/Testimonials/Clients/Partners/Products) failed with the message above. Pushing a code fix did **not** help — the PUT only wrote a draft (see the deployment section below); a caller still failed 9 minutes after the push. Publishing the workflow fixed it immediately.
+
+**Rule: every sub-workflow and error workflow must be published.** Audit with: `activeVersionId === versionId` → published and current; `null` → never published; differing → unpublished changes pending.
+
+*(Superseded theory, kept so it isn't re-derived: this incident was initially attributed to a `Test via Webhook` node in the sub-workflow winning n8n's start-node selection over `executeWorkflowTrigger`. That theory was **never confirmed** — the publish state fully explains the symptoms. The webhook node was removed anyway as unnecessary, but do not treat "webhook breaks sub-workflow dispatch" as established.)*
+
+---
+
+## Deploying via the Public API (n8n 2.x publish model)
+
+### `PUT /api/v1/workflows/{id}` does NOT always publish
+Verified empirically against our server with throwaway workflows:
+
+| Action | Result |
+|---|---|
+| `POST /api/v1/workflows` (create) | `activeVersionId: null` — **never published** |
+| `PUT` on an **unpublished** workflow | new `versionId`, `activeVersionId` stays `null` → **draft only, nothing goes live** |
+| `PUT` on an **already-published** workflow | **auto-publishes** (`activeVersionId` moves to the new `versionId`) |
+| `POST /api/v1/workflows/{id}/activate` | **publishes** (this endpoint is documented as "Publish a workflow"; accepts optional `versionId`, `name`, `description`) |
+| `POST /api/v1/workflows/{id}/deactivate` | **unpublishes** — sets `activeVersionId` back to `null` |
+
+So `push-workflows.js` (PUT only) silently does nothing to production for any workflow that isn't already published — newly created ones, and anything that got unpublished. `activate-workflows.js` is what publishes. There is no publish-while-inactive state: publish and activate are the same operation.
+
+### `GET /api/v1/workflows/{id}` returns the DRAFT, not what's running
+The top-level `nodes`/`connections` are the draft. **To verify what is actually live, read `activeVersion.nodes`.** This is a genuine trap: a post-push GET can show your change present while production still runs the old version. Confirm a deploy with `activeVersionId === versionId`, not by eyeballing the returned nodes.
+
+### Deploy recipe
+```sh
+op run --env-file=.env.tpl -- node build.js --workflow my-flow
+op run --env-file=.env.tpl -- node push-workflows.js --workflow my-flow
+op run --env-file=.env.tpl -- node activate-workflows.js --workflow my-flow   # publishes
+```
+Then assert `activeVersionId === versionId`. Note `activate` is safe/idempotent on an already-published workflow.
+
 ---
 
 ## Microsoft Graph Webhooks
