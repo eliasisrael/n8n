@@ -406,6 +406,14 @@ const buildCandidate = createNode(
         },
         { id: 'f1a0f0e2-6666-4a66-9666-ffffffffffff', name: 'filePath', value: '={{ $json.pathDisplay }}', type: 'string' },
         { id: 'f1a0f0e2-7777-4a77-9777-000000000001', name: 'fileName', value: '={{ $json.name }}', type: 'string' },
+        // Normalised keys, precomputed so the dedup filter stays legible.
+        { id: 'f1a0f0e2-9a9a-4a9a-999a-000000000009', name: 'fileKey', value: "={{ ($json.name || '').toLowerCase().replace(/[^a-z0-9]/g, '') }}", type: 'string' },
+        {
+          id: 'f1a0f0e2-9b9b-4a9b-999b-00000000000a',
+          name: 'acctKey',
+          value: `={{ $json.pathDisplay.split('/')[$json.pathDisplay.split('/').indexOf('${ACCOUNTS_ROOT.split('/').pop()}') + 1].replace(/^acct\\s+/i, '').toLowerCase().replace(/[^a-z0-9]/g, '') }}`,
+          type: 'string',
+        },
         {
           id: 'f1a0f0e2-8888-4a88-9888-000000000002',
           name: 'ndaUrl',
@@ -432,15 +440,24 @@ const filterNew = createNode(
       conditions: [
         {
           id: 'a2a0f0e2-9999-4a99-9999-000000000003',
-          // Two-part match. (1) exact ndaUrl — catches anything this workflow
-          // created. (2) normalised FILENAME — catches the records Eve entered
-          // by hand, whose NDA file holds a Dropbox *shared* link
-          // (/scl/fi/<id>/<name>?rlkey=...), a format our computed /home/ link
-          // can never equal. Without (2) the first live run would duplicate
-          // every contract already recorded. Same filename in the same folder
-          // is the same document, so a false positive here only ever skips a
-          // true duplicate.
-          leftValue: "={{ !$('Get Existing NDAs').all().some(p => (p.json.property_nda_file || '') === $json.ndaUrl || (String(p.json.property_nda_file || '').split('?')[0].split('/').pop() || '').toLowerCase().replace(/[^a-z0-9]/g, '') === ($json.fileName || '').toLowerCase().replace(/[^a-z0-9]/g, '')) }}",
+          // Two-part match.
+          // (1) exact ndaUrl — path-scoped, so it is precise by construction and
+          //     catches everything this workflow has created.
+          // (2) normalised FILENAME **scoped to the same client** — catches the
+          //     legacy records Eve entered by hand, whose NDA file holds a
+          //     Dropbox *shared* link (/scl/fi/<id>/<name>?rlkey=...) that our
+          //     computed /home/ link can never equal. Without (2) the first live
+          //     run would duplicate every contract already recorded.
+          //
+          // (2) MUST be client-scoped. A bare filename match is global, so two
+          // different clients each filing a generic "Mutual NDA.pdf" would make
+          // the second one vanish — a silently missing record, the worst failure
+          // here. The counterparty check confines it to the same client, and is
+          // required to be non-empty because ''.includes(x) is false but
+          // x.includes('') is TRUE, which would otherwise match everything.
+          // Multiple agreements from one client are separate documents with
+          // separate filenames, so they still each get their own record.
+          leftValue: "={{ !$('Get Existing NDAs').all().some(p => (p.json.property_nda_file || '') === $json.ndaUrl || ((String(p.json.property_nda_file || '').split('?')[0].split('/').pop() || '').toLowerCase().replace(/[^a-z0-9]/g, '') === $json.fileKey && String(p.json.property_counterparty || '').toLowerCase().replace(/[^a-z0-9]/g, '') !== '' && ($json.acctKey.includes(String(p.json.property_counterparty || '').toLowerCase().replace(/[^a-z0-9]/g, '')) || String(p.json.property_counterparty || '').toLowerCase().replace(/[^a-z0-9]/g, '').includes($json.acctKey)))) }}",
           rightValue: '',
           operator: { type: 'boolean', operation: 'true', singleValue: true },
         },
