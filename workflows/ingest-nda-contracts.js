@@ -58,24 +58,56 @@ const ANTHROPIC_HEADER_AUTH = {
   httpHeaderAuth: { id: 'JKGmltAERvaKJ6OS', name: 'Anthropic API Key' },
 };
 
+// The documents are NOT standalone NDAs. They are executed agreements of every
+// kind — MSAs, advisory/consulting, sponsorship, referral, partnership, vendor,
+// appearance — each carrying a confidentiality section. The job is to mine the
+// NDA clauses out of whatever agreement arrives. An earlier version framed this
+// as "extract terms from an NDA", which made the model editorialise ("This is a
+// Background Check Release Form, not an NDA") into Special provisions instead of
+// reporting the confidentiality terms.
 const EXTRACTION_PROMPT = [
-  'You are extracting key terms from an executed non-disclosure agreement (NDA).',
+  'You are extracting the CONFIDENTIALITY / NON-DISCLOSURE provisions from an',
+  'executed agreement.',
+  '',
+  'The document is usually NOT a standalone NDA. It is typically a master',
+  'services, advisory, consulting, sponsorship, referral, partnership, vendor or',
+  'appearance agreement — each of which contains a confidentiality section.',
+  'Your job is to locate that section and report its terms.',
+  '',
   '"We"/"us" refers to Venn Factory (also written VF or Venn Factory LLC).',
   'The other signing party is the counterparty.',
   '',
   'Call the record_nda tool exactly once. Rules:',
+  '- Do NOT remark on whether the document "is an NDA". That it is some other',
+  '  kind of agreement is expected. Just report the confidentiality terms.',
   '- Quote the agreement. Do not infer or invent terms that are not present.',
-  '- If a field is genuinely absent from the document, return an empty string',
-  '  (or null for effective_date). Do NOT guess.',
+  '- If a field is genuinely absent, return an empty string (null for',
+  '  effective_date). NEVER return a placeholder such as "<UNKNOWN>", "N/A",',
+  '  "Unknown", "None" or "TBD".',
+  '- counterparty_legal_name: the counterparty\'s formal legal entity from the',
+  '  signature block. If truly not determinable, return an empty string.',
   '- effective_date must be YYYY-MM-DD. If the agreement is dated only by',
   '  signature, use the LATEST signature date. If no date is present, null.',
+  '- term: the duration of the CONFIDENTIALITY obligations if stated separately;',
+  '  otherwise the term of the agreement — say which one you are reporting.',
+  '- post_termination_period: how long confidentiality survives termination or',
+  '  expiry, e.g. "5 years from termination", "perpetual for trade secrets".',
+  '- governing_law / venue: of the agreement, since these govern its',
+  '  confidentiality section too.',
+  '- special_provisions: confidentiality-specific carve-outs or unusual terms',
+  '  ONLY (residuals clauses, trade-secret perpetuity, publicity or',
+  '  non-disparagement restrictions, unusual permitted disclosures). Empty',
+  '  string if the confidentiality terms are unremarkable.',
+  '- document_type: a short label for what the document actually is, e.g.',
+  '  "Master Services Agreement", "Advisory Agreement", "Mutual NDA",',
+  '  "Sponsorship Agreement", "Statement of Work".',
+  '- confidentiality_found: "Yes" if the document contains confidentiality or',
+  '  non-disclosure provisions at all; "No" if it genuinely has none.',
   '- my_form is "Yes" only if this is clearly Venn Factory\'s own template',
   '  (e.g. VF is named first/as "Company", or VF branding/footers appear).',
   '  If it is plainly the counterparty\'s paper, "No". If unclear, "No".',
   '- expired is "Yes" only if the term has demonstrably already ended as of',
   '  today. If the term is open-ended, survives, or you cannot tell, "No".',
-  '- term and post_termination_period should be quoted compactly, e.g.',
-  '  "3 years from Effective Date", "perpetual for trade secrets, 5 years otherwise".',
 ].join('\n');
 
 // The tool schema forces well-shaped JSON back, so no response parsing is
@@ -92,14 +124,20 @@ const EXTRACTION_TOOL = {
       post_termination_period: { type: 'string', description: 'How long confidentiality obligations survive termination' },
       governing_law: { type: 'string', description: 'Governing law, e.g. "Delaware"' },
       venue: { type: 'string', description: 'Venue / forum for disputes' },
-      special_provisions: { type: 'string', description: 'Notable non-standard terms; empty string if none' },
+      special_provisions: { type: 'string', description: 'Confidentiality-specific carve-outs or unusual terms; empty string if unremarkable' },
+      // Reporting/QA only — the NDAs database has no property for these. They
+      // make the dry run legible (what kind of agreement was this?) and surface
+      // the rare document that carries no confidentiality section at all.
+      document_type: { type: 'string', description: 'What the document actually is, e.g. "Master Services Agreement", "Mutual NDA"' },
+      confidentiality_found: { type: 'string', enum: ['Yes', 'No'], description: 'Does the document contain confidentiality/non-disclosure provisions at all?' },
       auto_renew: { type: 'string', enum: ['Yes', 'No'] },
       my_form: { type: 'string', enum: ['Yes', 'No'] },
       expired: { type: 'string', enum: ['Yes', 'No'] },
     },
     required: [
       'counterparty_legal_name', 'effective_date', 'term', 'post_termination_period',
-      'governing_law', 'venue', 'special_provisions', 'auto_renew', 'my_form', 'expired',
+      'governing_law', 'venue', 'special_provisions', 'document_type',
+      'confidentiality_found', 'auto_renew', 'my_form', 'expired',
     ],
   },
 };
@@ -151,7 +189,13 @@ for (const item of $input.all()) {
   const nda = (tool && tool.input) || {};
 
   const accountName = j.accountName || '';
-  const counterparty = nda.counterparty_legal_name || accountName;
+
+  // Models sometimes emit a literal placeholder instead of an empty string, and
+  // "<UNKNOWN>" is truthy — it would land in Notion verbatim. Treat any
+  // placeholder as absent and fall back to the folder name.
+  let cp = String(nda.counterparty_legal_name || '').trim();
+  if (/^(n\\/?a|none|unknown|not specified|not stated|tbd|null)$/i.test(cp) || /^[<\\[(]/.test(cp)) cp = '';
+  const counterparty = cp || accountName;
 
   // Clients first, then Partners.
   const client = findPage(clients, accountName);
@@ -185,6 +229,8 @@ for (const item of $input.all()) {
       account: accountName,
       file: j.filePath,
       counterparty,
+      document_type: nda.document_type || '',
+      confidentiality_found: nda.confidentiality_found || '',
       effective_date: nda.effective_date || null,
       term: nda.term || '',
       governing_law: nda.governing_law || '',
