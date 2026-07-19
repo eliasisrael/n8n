@@ -205,9 +205,17 @@ for (const item of $input.all()) {
   const client = findPage(clients, accountName);
   const partner = client ? null : findPage(partners, accountName);
 
+  // Disambiguate the title with the effective date. A client can hold several
+  // agreements (Cyber1Armor and BalkanID each have two sponsorship agreements),
+  // and "<co> NDA" alone made them indistinguishable in Notion. ISO dates keep
+  // the titles alphabetically sortable within a client. Falls back to the bare
+  // "<co> NDA" when the document carries no determinable date.
+  const hasDate = nda.effective_date && /^\\d{4}-\\d{2}-\\d{2}$/.test(nda.effective_date);
+  const title = accountName + ' NDA' + (hasDate ? ' \\u2014 ' + nda.effective_date : '');
+
   const text = (v) => [{ text: { content: String(v || '').substring(0, 2000) } }];
   const properties = {
-    '"<co> NDA"': { title: text(accountName + ' NDA') },
+    '"<co> NDA"': { title: text(title) },
     'Counterparty': { rich_text: text(counterparty) },
     'NDA file': { url: j.ndaUrl || null },
     'Term': { rich_text: text(nda.term) },
@@ -231,6 +239,7 @@ for (const item of $input.all()) {
     json: {
       // Flat preview fields — this is what the dry run prints.
       account: accountName,
+      title,
       file: j.filePath,
       counterparty,
       document_type: nda.document_type || '',
