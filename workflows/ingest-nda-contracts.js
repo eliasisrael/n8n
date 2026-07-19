@@ -300,10 +300,14 @@ return out;
 // Nodes
 // ---------------------------------------------------------------------------
 
+// Weekdays at 07:00 (server local time). Hourly was far too frequent: executed
+// contracts arrive a few times a month, and every run re-lists every account
+// folder. A cron expression is used rather than the "weeks" interval because
+// day-of-week is explicit here and doesn't depend on n8n's day-index convention.
 const scheduleTrigger = createNode(
   'Schedule Trigger',
   'n8n-nodes-base.scheduleTrigger',
-  { rule: { interval: [{ field: 'hours', hoursInterval: 1 }] } },
+  { rule: { interval: [{ field: 'cronExpression', expression: '0 7 * * 1-5' }] } },
   { position: [0, 300], typeVersion: 1.2 },
 );
 
