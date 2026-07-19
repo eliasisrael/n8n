@@ -6,13 +6,13 @@
  * the Notion NDAs database.
  *
  * Dropbox layout:
- *   /Filing Cabinet/*Venn Factory/*VF accts/<account name>/Contracts/   ← EXECUTED (processed)
- *   /Filing Cabinet/*Venn Factory/*VF accts/<account name>/Contracts/<sub>/  ← drafts (ignored)
+ *   /Filing Cabinet/*Venn Factory/VF accts/<account name>/Contracts/   ← EXECUTED (processed)
+ *   /Filing Cabinet/*Venn Factory/VF accts/<account name>/Contracts/<sub>/  ← drafts (ignored)
  *
  * Only files sitting DIRECTLY in `Contracts` are treated as executed. Drafts
  * live in subfolders, and we never descend: the Dropbox folder list is
  * non-recursive, and "Filter: PDFs Only" additionally drops folder entries.
- * The `*` in `*Venn Factory` / `*VF accts` is a literal character, not a glob.
+ * The `*` in `*Venn Factory` is a literal character, not a glob; `VF accts` has none.
  *
  * The account folder name gives us the client, so the counterparty does not
  * have to be guessed from the document. The model still supplies the formal
@@ -38,7 +38,8 @@ import { createWorkflow, createNode, connect } from '../lib/workflow.js';
 // Config
 // ---------------------------------------------------------------------------
 
-const ACCOUNTS_ROOT = '/Filing Cabinet/*Venn Factory/*VF accts';
+// NOTE the asymmetry: '*Venn Factory' carries a literal '*', 'VF accts' does not.
+const ACCOUNTS_ROOT = '/Filing Cabinet/*Venn Factory/VF accts';
 const CONTRACTS_SUBFOLDER = 'Contracts';
 
 const NDA_DB_ID = '2378ebaf-15ee-8091-a178-e6cfda664c4e';
