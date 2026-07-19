@@ -106,8 +106,13 @@ const EXTRACTION_PROMPT = [
   '- my_form is "Yes" only if this is clearly Venn Factory\'s own template',
   '  (e.g. VF is named first/as "Company", or VF branding/footers appear).',
   '  If it is plainly the counterparty\'s paper, "No". If unclear, "No".',
-  '- expired is "Yes" only if the term has demonstrably already ended as of',
-  '  today. If the term is open-ended, survives, or you cannot tell, "No".',
+  '- term_end_date: the date the agreement/confidentiality term ENDS, as',
+  '  YYYY-MM-DD, but ONLY when the document states an explicit calendar end',
+  '  date. Convert whatever format it appears in (e.g. "12.31.2026" is',
+  '  2026-12-31). Return null if the term ends on an event, is open-ended,',
+  '  is expressed only as a duration, or is not stated. Do not compute it.',
+  '- expired: your own read of whether the term has already ended. This is a',
+  '  cross-check only; the authoritative value is computed from term_end_date.',
 ].join('\n');
 
 // The tool schema forces well-shaped JSON back, so no response parsing is
@@ -130,14 +135,21 @@ const EXTRACTION_TOOL = {
       // the rare document that carries no confidentiality section at all.
       document_type: { type: 'string', description: 'What the document actually is, e.g. "Master Services Agreement", "Mutual NDA"' },
       confidentiality_found: { type: 'string', enum: ['Yes', 'No'], description: 'Does the document contain confidentiality/non-disclosure provisions at all?' },
+      // Extracted as a first-class value so `Expired?` can be COMPUTED rather
+      // than judged. Previously the end date existed only inside the free-text
+      // `term`, so on every run the model had to re-read it from its own prose
+      // and compare it to today in its head — which is why `expired` flipped
+      // between runs (Partners Group: Yes/No/Yes) while every extracted field
+      // stayed stable.
+      term_end_date: { type: ['string', 'null'], description: 'YYYY-MM-DD end date of the term, ONLY if an explicit calendar date is stated; null if event-based, open-ended, duration-only, or absent' },
       auto_renew: { type: 'string', enum: ['Yes', 'No'] },
       my_form: { type: 'string', enum: ['Yes', 'No'] },
-      expired: { type: 'string', enum: ['Yes', 'No'] },
+      expired: { type: 'string', enum: ['Yes', 'No'], description: 'Cross-check only — the authoritative value is computed from term_end_date' },
     },
     required: [
-      'counterparty_legal_name', 'effective_date', 'term', 'post_termination_period',
-      'governing_law', 'venue', 'special_provisions', 'document_type',
-      'confidentiality_found', 'auto_renew', 'my_form', 'expired',
+      'counterparty_legal_name', 'effective_date', 'term', 'term_end_date',
+      'post_termination_period', 'governing_law', 'venue', 'special_provisions',
+      'document_type', 'confidentiality_found', 'auto_renew', 'my_form', 'expired',
     ],
   },
 };
@@ -178,6 +190,12 @@ function findPage(pages, accountName) {
   return hit || null;
 }
 
+// ISO date strings compare correctly with <, so no date parsing is needed here
+// either — the regex is a validity gate, not a parser.
+const ISO = /^\\d{4}-\\d{2}-\\d{2}$/;
+let today;
+try { today = $now.toFormat('yyyy-MM-dd'); } catch (e) { today = new Date().toISOString().slice(0, 10); }
+
 let clients = [], partners = [];
 try { clients = $('Get Clients').all(); } catch (e) {}
 try { partners = $('Get Partners').all(); } catch (e) {}
@@ -210,8 +228,15 @@ for (const item of $input.all()) {
   // and "<co> NDA" alone made them indistinguishable in Notion. ISO dates keep
   // the titles alphabetically sortable within a client. Falls back to the bare
   // "<co> NDA" when the document carries no determinable date.
-  const hasDate = nda.effective_date && /^\\d{4}-\\d{2}-\\d{2}$/.test(nda.effective_date);
+  const hasDate = nda.effective_date && ISO.test(nda.effective_date);
   const title = accountName + ' NDA' + (hasDate ? ' \\u2014 ' + nda.effective_date : '');
+
+  // Expired? is COMPUTED, never taken from the model. An explicit end date in
+  // the past means expired; anything else (event-based, open-ended, unstated)
+  // stays "No" — the conservative default, which Eve can flip by hand for
+  // events only she knows have happened.
+  const endDate = (nda.term_end_date && ISO.test(nda.term_end_date)) ? nda.term_end_date : null;
+  const expired = (endDate && endDate < today) ? 'Yes' : 'No';
 
   const text = (v) => [{ text: { content: String(v || '').substring(0, 2000) } }];
   const properties = {
@@ -225,7 +250,7 @@ for (const item of $input.all()) {
     'Special provisions': { rich_text: text(nda.special_provisions) },
     'Auto-renew?': { select: { name: nda.auto_renew === 'Yes' ? 'Yes' : 'No' } },
     'My form?': { select: { name: nda.my_form === 'Yes' ? 'Yes' : 'No' } },
-    'Expired?': { select: { name: nda.expired === 'Yes' ? 'Yes' : 'No' } },
+    'Expired?': { select: { name: expired } },
   };
 
   // Only send a date when we actually have one — Notion rejects a malformed date.
@@ -252,7 +277,10 @@ for (const item of $input.all()) {
       special_provisions: nda.special_provisions || '',
       auto_renew: nda.auto_renew,
       my_form: nda.my_form,
-      expired: nda.expired,
+      expired,                       // computed — what goes to Notion
+      term_end_date: endDate,        // the input it was computed from
+      expired_model: nda.expired,    // the model's own read, for comparison
+      today,
       linked_to: client ? 'Client: ' + titleOf(client) : (partner ? 'Partner: ' + titleOf(partner) : 'NONE — link by hand'),
       ndaUrl: j.ndaUrl,
       requestBody: JSON.stringify({ parent: { database_id: NDA_DB_ID }, properties }),
