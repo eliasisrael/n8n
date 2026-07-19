@@ -195,6 +195,10 @@ for (const item of $input.all()) {
   // placeholder as absent and fall back to the folder name.
   let cp = String(nda.counterparty_legal_name || '').trim();
   if (/^(n\\/?a|none|unknown|not specified|not stated|tbd|null)$/i.test(cp) || /^[<\\[(]/.test(cp)) cp = '';
+  // On one-sided documents (an appearance release, say) the model can name OUR
+  // side as the counterparty — a Commvault release came back as "Eve Maler".
+  // We are never our own counterparty, so fall back to the account folder.
+  if (/venn factory|\\beve maler\\b|\\bvf\\b/i.test(cp)) cp = '';
   const counterparty = cp || accountName;
 
   // Clients first, then Partners.
@@ -473,7 +477,18 @@ const buildPrompt = createNode(
   {
     assignments: {
       assignments: [
-        { id: 'b2a0f0e2-1010-4a10-9010-000000000004', name: 'prompt', value: EXTRACTION_PROMPT, type: 'string' },
+        // The model has no reliable notion of the current date, so `expired`
+        // was guesswork: it marked a Partners Group agreement running through
+        // 2026-12-31 as already expired. Inject the run date. (EXTRACTION_PROMPT
+        // contains no braces, so it is safe to carry as an expression.)
+        {
+          id: 'b2a0f0e2-1010-4a10-9010-000000000004',
+          name: 'prompt',
+          value: '=' + EXTRACTION_PROMPT
+            + "\n\nToday's date is {{ $now.toFormat('yyyy-MM-dd') }}."
+            + ' Judge `expired` strictly against that date.',
+          type: 'string',
+        },
         // NDAs are short; the cap only guards against a pathological PDF.
         { id: 'b2a0f0e2-1111-4a11-9011-000000000005', name: 'contractText', value: "={{ ($json.text || '').slice(0, 60000) }}", type: 'string' },
         // The tool schema is carried as a LITERAL string (no leading '='), so
