@@ -347,7 +347,11 @@ const buildCandidate = createNode(
         {
           id: 'f1a0f0e2-5555-4a55-9555-eeeeeeeeeeee',
           name: 'accountName',
-          value: `={{ $json.pathDisplay.split('/')[$json.pathDisplay.split('/').indexOf('${ACCOUNTS_ROOT.split('/').pop()}') + 1] }}`,
+          // Folders are named "acct <Company>" (e.g. "acct Twilio") but the
+          // Clients/Partners databases hold the bare company ("Twilio"), so the
+          // prefix is stripped here. Without this the title reads
+          // "acct Twilio NDA" and relation matching relies on luck.
+          value: `={{ $json.pathDisplay.split('/')[$json.pathDisplay.split('/').indexOf('${ACCOUNTS_ROOT.split('/').pop()}') + 1].replace(/^acct\\s+/i, '').trim() }}`,
           type: 'string',
         },
         { id: 'f1a0f0e2-6666-4a66-9666-ffffffffffff', name: 'filePath', value: '={{ $json.pathDisplay }}', type: 'string' },
@@ -378,7 +382,15 @@ const filterNew = createNode(
       conditions: [
         {
           id: 'a2a0f0e2-9999-4a99-9999-000000000003',
-          leftValue: "={{ !$('Get Existing NDAs').all().some(p => (p.json.property_nda_file || '') === $json.ndaUrl) }}",
+          // Two-part match. (1) exact ndaUrl — catches anything this workflow
+          // created. (2) normalised FILENAME — catches the records Eve entered
+          // by hand, whose NDA file holds a Dropbox *shared* link
+          // (/scl/fi/<id>/<name>?rlkey=...), a format our computed /home/ link
+          // can never equal. Without (2) the first live run would duplicate
+          // every contract already recorded. Same filename in the same folder
+          // is the same document, so a false positive here only ever skips a
+          // true duplicate.
+          leftValue: "={{ !$('Get Existing NDAs').all().some(p => (p.json.property_nda_file || '') === $json.ndaUrl || (String(p.json.property_nda_file || '').split('?')[0].split('/').pop() || '').toLowerCase().replace(/[^a-z0-9]/g, '') === ($json.fileName || '').toLowerCase().replace(/[^a-z0-9]/g, '')) }}",
           rightValue: '',
           operator: { type: 'boolean', operation: 'true', singleValue: true },
         },
@@ -418,6 +430,13 @@ const buildPrompt = createNode(
         { id: 'b2a0f0e2-1010-4a10-9010-000000000004', name: 'prompt', value: EXTRACTION_PROMPT, type: 'string' },
         // NDAs are short; the cap only guards against a pathological PDF.
         { id: 'b2a0f0e2-1111-4a11-9011-000000000005', name: 'contractText', value: "={{ ($json.text || '').slice(0, 60000) }}", type: 'string' },
+        // The tool schema is carried as a LITERAL string (no leading '='), so
+        // n8n never parses it as an expression. Inlining it into the request
+        // expression broke the node: the schema contains '}}' sequences (e.g.
+        // '"enum":["Yes","No"]}}'), and n8n's parser ends an expression at the
+        // first '}}' it sees — producing "invalid syntax". Keep brace-heavy
+        // JSON out of expressions and JSON.parse it back at point of use.
+        { id: 'b2a0f0e2-1212-4a12-9012-000000000007', name: 'toolsJson', value: JSON.stringify([EXTRACTION_TOOL]), type: 'string' },
       ],
     },
     options: {},
@@ -442,14 +461,17 @@ const extractFields = createNode(
     },
     sendBody: true,
     specifyBody: 'json',
-    jsonBody: `={{ JSON.stringify({
-      model: ${JSON.stringify(EXTRACTION_MODEL)},
-      max_tokens: 2000,
-      tools: [${JSON.stringify(EXTRACTION_TOOL)}],
-      tool_choice: { type: 'tool', name: 'record_nda' },
-      messages: [{ role: 'user', content: $json.prompt + '\\n\\n--- CONTRACT ---\\n\\n' + $json.contractText }]
-    }) }}`,
-    options: { timeout: 120000 },
+    // Must stay a single-line, brace-light expression — see toolsJson above.
+    jsonBody: '={{ JSON.stringify({ model: ' + JSON.stringify(EXTRACTION_MODEL)
+      + ', max_tokens: 2000, tools: JSON.parse($json.toolsJson)'
+      + ', tool_choice: { type: "tool", name: "record_nda" }'
+      + ', messages: [{ role: "user", content: $json.prompt + "\\n\\n--- CONTRACT ---\\n\\n" + $json.contractText }] }) }}',
+    options: {
+      timeout: 120000,
+      // Throttle to one contract at a time with a gap between calls, so a
+      // folder-wide sweep can't burst into the Anthropic rate limit.
+      batching: { batch: { batchSize: 1, batchInterval: 2500 } },
+    },
   },
   { position: [3740, 200], typeVersion: 4.2, credentials: ANTHROPIC_HEADER_AUTH },
 );
