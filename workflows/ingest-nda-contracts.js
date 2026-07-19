@@ -559,6 +559,43 @@ const buildRequest = createNode(
 
 // --- Write (or report) ------------------------------------------------------
 
+// A handful of files in Contracts carry no confidentiality provisions at all
+// (an emailed amendment, a background-check release, a referral attachment
+// whose confidentiality lives in its parent agreement). Recording those would
+// put empty NDA columns in the register, so they are skipped.
+//
+// Deliberately fail-OPEN: only an explicit "No" skips. If the field were ever
+// missing, this records the document — visible and correctable — rather than
+// silently dropping a real agreement. Skipped items go to their own branch
+// instead of vanishing, so the run always shows what it passed over.
+const hasNdaClauses = createNode(
+  'Has NDA Clauses?',
+  'n8n-nodes-base.if',
+  {
+    conditions: {
+      options: { caseSensitive: false, leftValue: '', typeValidation: 'loose', version: 2 },
+      conditions: [
+        {
+          id: 'd3a0f0e2-1313-4a13-9013-000000000008',
+          leftValue: "={{ $json.confidentiality_found !== 'No' }}",
+          rightValue: '',
+          operator: { type: 'boolean', operation: 'true', singleValue: true },
+        },
+      ],
+      combinator: 'and',
+    },
+    options: {},
+  },
+  { position: [4400, 300], typeVersion: 2.2 },
+);
+
+const skipped = createNode(
+  'Skipped: No NDA Clauses',
+  'n8n-nodes-base.noOp',
+  {},
+  { position: [4620, 560], typeVersion: 1 },
+);
+
 const isDryRun = createNode(
   'Dry Run?',
   'n8n-nodes-base.if',
@@ -577,7 +614,7 @@ const isDryRun = createNode(
     },
     options: {},
   },
-  { position: [4400, 300], typeVersion: 2.2 },
+  { position: [4620, 300], typeVersion: 2.2 },
 );
 
 // Dry run terminates here: the item already carries the flat preview fields.
@@ -585,7 +622,7 @@ const dryRunReport = createNode(
   'Would Create (Dry Run)',
   'n8n-nodes-base.noOp',
   {},
-  { position: [4620, 200], typeVersion: 1 },
+  { position: [4840, 200], typeVersion: 1 },
 );
 
 const createRecord = createNode(
@@ -603,7 +640,7 @@ const createRecord = createNode(
     jsonBody: '={{ $json.requestBody }}',
     options: { batching: { batch: { batchSize: 1, batchInterval: 334 } } },
   },
-  { position: [4620, 400], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
+  { position: [4840, 400], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
 );
 createRecord.retryOnFail = true;
 createRecord.maxTries = 3;
@@ -620,7 +657,7 @@ export default createWorkflow('Ingest NDA Contracts', {
     listAccounts, filterAccountFolders, listContracts, filterPdfs,
     buildCandidate, filterNew,
     downloadContract, extractPdf, buildPrompt, extractFields,
-    mergeExtraction, buildRequest, isDryRun, dryRunReport, createRecord,
+    mergeExtraction, buildRequest, hasNdaClauses, skipped, isDryRun, dryRunReport, createRecord,
   ],
   connections: [
     connect(scheduleTrigger, config),
@@ -646,7 +683,9 @@ export default createWorkflow('Ingest NDA Contracts', {
     connect(extractFields, mergeExtraction, 0, 0),
     connect(filterNew, mergeExtraction, 0, 1),
     connect(mergeExtraction, buildRequest),
-    connect(buildRequest, isDryRun),
+    connect(buildRequest, hasNdaClauses),
+    connect(hasNdaClauses, isDryRun, 0),        // has confidentiality provisions
+    connect(hasNdaClauses, skipped, 1),         // none found → skip, but stay visible
     connect(isDryRun, dryRunReport, 0),
     connect(isDryRun, createRecord, 1),
   ],
