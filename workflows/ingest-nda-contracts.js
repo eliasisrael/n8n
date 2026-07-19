@@ -18,9 +18,15 @@
  * have to be guessed from the document. The model still supplies the formal
  * legal entity (the signature block often differs from the folder name).
  *
- * DRY RUN IS THE DEFAULT. `Config.dryRun = true` reports what WOULD be created
- * and writes nothing. Flip it to false once the first pass looks right — the
- * first real run will otherwise ingest every contract already on disk.
+ * LIVE since 2026-07-18. `Config.dryRun` is the kill switch: set it to true to
+ * report what WOULD be created and write nothing. Verified across four dry runs
+ * before going live.
+ *
+ * Known, accepted imprecision: `Expired?` is computed from an explicit
+ * term_end_date, which only ~3 in 19 agreements state — event-based terms
+ * therefore read "No" and need a hand-flip once the event has passed. And the
+ * confidentiality_found gate is a judgement call, so a borderline document can
+ * take an extra run to land (self-healing: once recorded, dedup keeps it).
  *
  * Dedup: the Dropbox web link is stored in the NDAs `NDA file` URL property and
  * used as the per-file key. It cannot be the counterparty or the title, because
@@ -308,7 +314,8 @@ const config = createNode(
   {
     assignments: {
       assignments: [
-        { id: 'c1a0f0e2-1111-4a11-9111-aaaaaaaaaaaa', name: 'dryRun', value: true, type: 'boolean' },
+        // LIVE as of 2026-07-18. Set back to true to report without writing.
+        { id: 'c1a0f0e2-1111-4a11-9111-aaaaaaaaaaaa', name: 'dryRun', value: false, type: 'boolean' },
       ],
     },
     options: {},
