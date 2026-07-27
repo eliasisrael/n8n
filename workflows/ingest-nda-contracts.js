@@ -119,13 +119,74 @@ const EXTRACTION_PROMPT = [
   '  is expressed only as a duration, or is not stated. Do not compute it.',
   '- expired: your own read of whether the term has already ended. This is a',
   '  cross-check only; the authoritative value is computed from term_end_date.',
+  '',
+  'ALSO extract the COMMERCIAL terms of the overall agreement (not just the',
+  'confidentiality section). These feed a separate engagement/financials record.',
+  'Same rules: quote, do not invent, empty string / null when genuinely absent,',
+  'never a placeholder.',
+  '- engagement_start_date / engagement_end_date: YYYY-MM-DD bounds of the OVERALL',
+  '  agreement term (distinct from confidentiality survival). null if not an',
+  '  explicit calendar date.',
+  '- relationship_auto_renew: "Yes" / "No" / "Unknown" — whether the OVERALL',
+  '  relationship (not just confidentiality) auto-renews.',
+  '- renewal_terms: how renewal works, quoted compactly (e.g. "auto-renews for',
+  '  successive 1-year terms unless 30 days notice"). Empty if none.',
+  '- termination_notice: the notice window to terminate for convenience (e.g.',
+  '  "30 days written notice"). Empty if none / not terminable for convenience.',
+  '- payment_terms: e.g. "Net 30", "Due on receipt". Empty if absent.',
+  '- invoicing_schedule: when/how invoicing happens (e.g. "monthly in advance",',
+  '  "on milestone completion", "50% upfront, 50% on delivery"). Empty if absent.',
+  '- fees: the amounts — rates, retainer, fixed fee, per-cycle amount, currency —',
+  '  summarised faithfully (e.g. "$8,000/month retainer", "€15,000 fixed").',
+  '- deliverables: what Venn Factory is obligated to deliver, summarised. Empty',
+  '  if none stated.',
+  '- point_of_contact: the contractual point of contact (name, title, email,',
+  '  phone as present in the document). Empty if none named.',
+  '- special_obligations: NON-confidentiality obligations Venn Factory takes on',
+  '  (exclusivity, non-compete, insurance, IP assignment, reporting duties,',
+  '  etc.). Empty if none beyond the standard confidentiality ones.',
+  '- open_questions: an array of short strings flagging anything you could NOT',
+  '  determine that a human should resolve (e.g. "fee amount not stated in this',
+  '  document — may be in an attached SOW"). Empty array if nothing is unclear.',
+  '',
+  'FINALLY, produce STRUCTURED commercial values for the financials database.',
+  'These must be clean, typed values (the prose `fees`/`payment_terms` above stay',
+  'as the human-readable reference). Amounts are PLAIN NUMBERS — no currency',
+  'symbol, no commas (write 3300, not "$3,300").',
+  '- fee_type: one of retainer (recurring fixed amount per period) | hourly |',
+  '  one_time | per_event | contingent (e.g. % of a transaction / finder fee) |',
+  '  none. This governs what is forecastable. A public-appearance / speaking',
+  '  agreement with a fixed appearance fee is "per_event" (or "one_time" if a',
+  '  single fixed fee). NEVER leave fee_type blank when a fee exists — pick the',
+  '  closest type.',
+  '- cycle_amount: the recurring per-period amount, as a number, ONLY when',
+  '  fee_type is "retainer". null for hourly/contingent/one_time/per_event —',
+  '  do NOT invent a recurring amount for non-recurring fees.',
+  '- cycle_length: "Month" | "Quarter" | "Year" for a retainer; null otherwise.',
+  '- cycle_count: number of cycles if the term is bounded and countable; null if',
+  '  open-ended or not applicable.',
+  '- currency: "USD" | "EUR" | "Other". If ANY amount (cycle_amount,',
+  '  due_at_start, due_at_end) is set, currency MUST be set — infer "USD" from a',
+  '  "$" and "EUR" from "€". Only null when there is genuinely no amount at all.',
+  '- due_at_start: a one-time/upfront amount due at the start (e.g. a one-time',
+  '  fee, a sponsorship fee due on execution), as a number; null if none.',
+  '- due_at_end: a final/one-time amount due at the end, as a number; null if none.',
+  '- payment_terms_normalized: one of "Due on receipt" | "Net 10" | "Net 15" |',
+  '  "Net 30" | "Net 45" | "Other" | null (null if not stated).',
+  '- engagement_type: one or more labels from EXACTLY this list, best-fitting',
+  '  the agreement: Internal, Advisor, Advisory board, Workshop, Keynote,',
+  '  Management board, Supervisory board, External, Public appearance,',
+  '  Video production, Explore partnership, Sponsorship, Writing. Always assign',
+  '  at least one when the agreement type is determinable (advisory/consulting',
+  '  → "Advisor"; a standalone NDA exploring a deal → "Explore partnership";',
+  '  a speaking engagement → "Public appearance").',
 ].join('\n');
 
 // The tool schema forces well-shaped JSON back, so no response parsing is
 // needed — the fields are read straight off the tool_use block.
 const EXTRACTION_TOOL = {
   name: 'record_nda',
-  description: 'Record the key terms extracted from an executed NDA.',
+  description: 'Record the confidentiality terms AND the commercial terms extracted from an executed contract.',
   input_schema: {
     type: 'object',
     properties: {
@@ -151,11 +212,44 @@ const EXTRACTION_TOOL = {
       auto_renew: { type: 'string', enum: ['Yes', 'No'] },
       my_form: { type: 'string', enum: ['Yes', 'No'] },
       expired: { type: 'string', enum: ['Yes', 'No'], description: 'Cross-check only — the authoritative value is computed from term_end_date' },
+
+      // --- Commercial terms (item 1 expansion; feed the engagement/financials
+      // record built in item 2). NOT written to the NDAs DB — surfaced in the
+      // dry-run preview so extraction quality can be reviewed before item 2. ---
+      engagement_start_date: { type: ['string', 'null'], description: 'YYYY-MM-DD start of the OVERALL agreement term, or null' },
+      engagement_end_date: { type: ['string', 'null'], description: 'YYYY-MM-DD end of the OVERALL agreement term, or null' },
+      relationship_auto_renew: { type: 'string', enum: ['Yes', 'No', 'Unknown'], description: 'Whether the overall relationship auto-renews (not just confidentiality)' },
+      renewal_terms: { type: 'string', description: 'How renewal works; empty if none' },
+      termination_notice: { type: 'string', description: 'Notice window to terminate for convenience; empty if none' },
+      payment_terms: { type: 'string', description: 'e.g. "Net 30", "Due on receipt"; empty if absent' },
+      invoicing_schedule: { type: 'string', description: 'When/how invoicing happens; empty if absent' },
+      fees: { type: 'string', description: 'Amounts/rates/retainer with currency, summarised; empty if absent' },
+      deliverables: { type: 'string', description: 'What Venn Factory must deliver; empty if none' },
+      point_of_contact: { type: 'string', description: 'Contractual POC (name/title/email/phone as present); empty if none' },
+      special_obligations: { type: 'string', description: 'Non-confidentiality obligations VF takes on; empty if none' },
+      open_questions: { type: 'array', items: { type: 'string' }, description: 'Unknowns a human should resolve; empty array if none' },
+
+      // --- Structured commercial values (item 1.5) — map 1:1 into the Client
+      // engagement financials DB columns in item 2. Amounts are plain numbers. ---
+      fee_type: { type: 'string', enum: ['retainer', 'hourly', 'one_time', 'per_event', 'contingent', 'none'], description: 'What kind of fee; governs what is forecastable' },
+      cycle_amount: { type: ['number', 'null'], description: 'Recurring per-period amount (plain number), ONLY when fee_type is retainer; null otherwise' },
+      cycle_length: { type: ['string', 'null'], enum: ['Month', 'Quarter', 'Year', null], description: 'Recurring period for a retainer; null otherwise' },
+      cycle_count: { type: ['number', 'null'], description: 'Number of cycles if bounded/countable; null if open-ended' },
+      currency: { type: ['string', 'null'], enum: ['USD', 'EUR', 'Other', null], description: 'Currency of the amounts; null if no amount' },
+      due_at_start: { type: ['number', 'null'], description: 'One-time/upfront amount due at start (plain number); null if none' },
+      due_at_end: { type: ['number', 'null'], description: 'Final/one-time amount due at end (plain number); null if none' },
+      payment_terms_normalized: { type: ['string', 'null'], enum: ['Due on receipt', 'Net 10', 'Net 15', 'Net 30', 'Net 45', 'Other', null], description: 'Normalized payment terms for the DB select; null if not stated' },
+      engagement_type: { type: 'array', items: { type: 'string', enum: ['Internal', 'Advisor', 'Advisory board', 'Workshop', 'Keynote', 'Management board', 'Supervisory board', 'External', 'Public appearance', 'Video production', 'Explore partnership', 'Sponsorship', 'Writing'] }, description: 'Zero or more labels from the fixed list, best-fitting the agreement' },
     },
     required: [
       'counterparty_legal_name', 'effective_date', 'term', 'term_end_date',
       'post_termination_period', 'governing_law', 'venue', 'special_provisions',
       'document_type', 'confidentiality_found', 'auto_renew', 'my_form', 'expired',
+      'engagement_start_date', 'engagement_end_date', 'relationship_auto_renew',
+      'renewal_terms', 'termination_notice', 'payment_terms', 'invoicing_schedule',
+      'fees', 'deliverables', 'point_of_contact', 'special_obligations', 'open_questions',
+      'fee_type', 'cycle_amount', 'cycle_length', 'cycle_count', 'currency',
+      'due_at_start', 'due_at_end', 'payment_terms_normalized', 'engagement_type',
     ],
   },
 };
@@ -244,6 +338,40 @@ for (const item of $input.all()) {
   const endDate = (nda.term_end_date && ISO.test(nda.term_end_date)) ? nda.term_end_date : null;
   const expired = (endDate && endDate < today) ? 'Yes' : 'No';
 
+  // What item 2 will do with this contract in the Client engagement financials
+  // DB, decided from fee_type (Eli, 2026-07-27):
+  //   retainer            -> row with a recurring cycle (Cycle payment/length/count)
+  //   one_time / per_event -> row with a single Due-at-start amount
+  //   hourly              -> SKIP (hard to forecast, very few; Eli 2026-07-27)
+  //   contingent          -> SKIP (finder/% fees are not forecastable)
+  //   none                -> SKIP (NDA-only / framework docs carry no financials)
+  const FIN_ACTION = {
+    retainer: 'row: recurring cycle',
+    one_time: 'row: due at start',
+    per_event: 'row: due at start',
+    hourly: 'skip: not forecastable',
+    contingent: 'skip: not forecastable',
+    none: 'skip: no financials',
+  };
+  // Guard 1 (currency): if an amount is present but currency wasn't extracted,
+  // default USD — these are overwhelmingly US contracts and the model reliably
+  // catches EUR via the "€" sign. Deterministic beats re-prompting.
+  const amtPresent = (nda.cycle_amount != null) || (nda.due_at_start != null) || (nda.due_at_end != null);
+  const currency = nda.currency || (amtPresent ? 'USD' : null);
+
+  // Guard 2 (never silently drop a fee): a known fee_type maps directly. A blank
+  // or unrecognized fee_type that nonetheless clearly carries a fee (structured
+  // amount, or a currency-amount in the prose) routes to REVIEW, not skip — so a
+  // ~$10k appearance can't vanish just because fee_type didn't classify.
+  let financials_action;
+  if (FIN_ACTION[nda.fee_type]) {
+    financials_action = FIN_ACTION[nda.fee_type];
+  } else {
+    const feePresent = amtPresent
+      || /[$€£]\\s?[\\d,]|\\bUSD\\b|\\bEUR\\b|\\bper\\b[^.]*\\b(day|hour|month|year)\\b/i.test(String(nda.fees || ''));
+    financials_action = feePresent ? 'review: unclassified fee' : 'skip: no financials';
+  }
+
   const text = (v) => [{ text: { content: String(v || '').substring(0, 2000) } }];
   const properties = {
     '"<co> NDA"': { title: text(title) },
@@ -287,6 +415,31 @@ for (const item of $input.all()) {
       term_end_date: endDate,        // the input it was computed from
       expired_model: nda.expired,    // the model's own read, for comparison
       today,
+      // --- commercial terms (item 1) — preview only; item 2 maps these into
+      // the Client engagement financials record ---
+      engagement_start_date: nda.engagement_start_date || null,
+      engagement_end_date: nda.engagement_end_date || null,
+      relationship_auto_renew: nda.relationship_auto_renew || '',
+      renewal_terms: nda.renewal_terms || '',
+      termination_notice: nda.termination_notice || '',
+      payment_terms: nda.payment_terms || '',
+      invoicing_schedule: nda.invoicing_schedule || '',
+      fees: nda.fees || '',
+      deliverables: nda.deliverables || '',
+      point_of_contact: nda.point_of_contact || '',
+      special_obligations: nda.special_obligations || '',
+      open_questions: Array.isArray(nda.open_questions) ? nda.open_questions : [],
+      // structured commercial values (item 1.5) → financials DB columns in item 2
+      fee_type: nda.fee_type || '',
+      cycle_amount: (nda.cycle_amount ?? null),
+      cycle_length: nda.cycle_length || null,
+      cycle_count: (nda.cycle_count ?? null),
+      currency,                     // guard 1: defaulted to USD when an amount is present
+      due_at_start: (nda.due_at_start ?? null),
+      due_at_end: (nda.due_at_end ?? null),
+      payment_terms_normalized: nda.payment_terms_normalized || null,
+      engagement_type: Array.isArray(nda.engagement_type) ? nda.engagement_type : [],
+      financials_action,            // what item 2 will do (computed from fee_type)
       linked_to: client ? 'Client: ' + titleOf(client) : (partner ? 'Partner: ' + titleOf(partner) : 'NONE — link by hand'),
       ndaUrl: j.ndaUrl,
       requestBody: JSON.stringify({ parent: { database_id: NDA_DB_ID }, properties }),
@@ -318,8 +471,15 @@ const config = createNode(
   {
     assignments: {
       assignments: [
-        // LIVE as of 2026-07-18. Set back to true to report without writing.
-        { id: 'c1a0f0e2-1111-4a11-9111-aaaaaaaaaaaa', name: 'dryRun', value: false, type: 'boolean' },
+        // DRY-RUN for item-1 development (expanded commercial extraction).
+        // Was live 2026-07-18; paused to review the new fields. Set back to
+        // false + republish once items 1+2 are done together.
+        { id: 'c1a0f0e2-1111-4a11-9111-aaaaaaaaaaaa', name: 'dryRun', value: true, type: 'boolean' },
+        // reviewAll bypasses the already-recorded dedup so a dry run re-extracts
+        // EVERY contract (for reviewing extraction quality on the backlog). Safe
+        // only alongside dryRun:true — it writes nothing. Set false for normal
+        // operation so recorded contracts aren't re-downloaded/re-extracted.
+        { id: 'c1a0f0e2-2222-4a22-9222-bbbbbbbbbbbb', name: 'reviewAll', value: false, type: 'boolean' },
       ],
     },
     options: {},
@@ -505,7 +665,7 @@ const filterNew = createNode(
           // x.includes('') is TRUE, which would otherwise match everything.
           // Multiple agreements from one client are separate documents with
           // separate filenames, so they still each get their own record.
-          leftValue: "={{ !$('Get Existing NDAs').all().some(p => (p.json.property_nda_file || '') === $json.ndaUrl || ((String(p.json.property_nda_file || '').split('?')[0].split('/').pop() || '').toLowerCase().replace(/[^a-z0-9]/g, '') === $json.fileKey && String(p.json.property_counterparty || '').toLowerCase().replace(/[^a-z0-9]/g, '') !== '' && ($json.acctKey.includes(String(p.json.property_counterparty || '').toLowerCase().replace(/[^a-z0-9]/g, '')) || String(p.json.property_counterparty || '').toLowerCase().replace(/[^a-z0-9]/g, '').includes($json.acctKey)))) }}",
+          leftValue: "={{ $('Config').first().json.reviewAll === true || !$('Get Existing NDAs').all().some(p => (p.json.property_nda_file || '') === $json.ndaUrl || ((String(p.json.property_nda_file || '').split('?')[0].split('/').pop() || '').toLowerCase().replace(/[^a-z0-9]/g, '') === $json.fileKey && String(p.json.property_counterparty || '').toLowerCase().replace(/[^a-z0-9]/g, '') !== '' && ($json.acctKey.includes(String(p.json.property_counterparty || '').toLowerCase().replace(/[^a-z0-9]/g, '')) || String(p.json.property_counterparty || '').toLowerCase().replace(/[^a-z0-9]/g, '').includes($json.acctKey)))) }}",
           rightValue: '',
           operator: { type: 'boolean', operation: 'true', singleValue: true },
         },
