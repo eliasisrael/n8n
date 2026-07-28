@@ -54,6 +54,16 @@ const PARTNERS_DB_ID = '642b44e9-1363-4765-aaaf-702a708d6812';
 // Client engagement financials (item 2). Client db here relates to the same
 // Clients DB above, so the client match resolved for the NDA reuses directly.
 const FIN_DB_ID = '1c68ebaf-15ee-8062-80b2-fcb378557689';
+// Contract Intake Log — one row per processed file (any outcome). A file in
+// the log is "completed" and skipped on future runs, closing the loop for
+// documents that create no NDA record and no financials row (amendments,
+// release forms, referrals) — which otherwise re-extract every run.
+const LOG_DB_ID = '3ab8ebaf-15ee-81c9-9321-f6a93120d642';
+// Notify Eve via her Office365 account (Graph /me/sendMail), matching the
+// Outlook-credential pattern the email workflows use. Requires the Mail.Send
+// scope on this credential.
+const OUTLOOK_CREDENTIAL = { microsoftOutlookOAuth2Api: { id: 'xUInnrPuP6ogucEt', name: 'Microsoft Outlook account' } };
+const NOTIFY_TO = 'eve@vennfactory.com';
 
 const EXTRACTION_MODEL = 'claude-sonnet-5';
 
@@ -468,6 +478,50 @@ for (const item of $input.all()) {
   if (client) properties['Client record'] = { relation: [{ id: client.json.id }] };
   if (partner) properties['Partner record'] = { relation: [{ id: partner.json.id }] };
 
+  // -------------------------------------------------------------------------
+  // Intake log row (item: mark this file completed). Written for EVERY file
+  // that reaches here, whatever the outcome, so it is never re-extracted.
+  // -------------------------------------------------------------------------
+  const LOG_DB_ID = ${JSON.stringify(LOG_DB_ID)};
+  const ndaCreated = nda.confidentiality_found !== 'No';   // passes Has NDA Clauses
+  let log_outcome;
+  if (ndaCreated && fin_create) log_outcome = 'NDA + Financials';
+  else if (ndaCreated) log_outcome = 'NDA record';
+  else if (fin_create) log_outcome = 'Financials row';
+  else if (financials_action.indexOf('skip: not forecastable') === 0) log_outcome = 'Skipped: not forecastable';
+  else log_outcome = 'Skipped: no clauses';
+
+  const oq = Array.isArray(nda.open_questions) ? nda.open_questions : [];
+  const logNote = [
+    (nda.document_type || '').trim(),
+    nda.fees ? ('Fee: ' + nda.fees) : '',
+    oq.length ? (oq.length + ' open question' + (oq.length > 1 ? 's' : '')) : '',
+  ].filter(Boolean).join(' | ');
+  const log_requestBody = JSON.stringify({
+    parent: { database_id: LOG_DB_ID },
+    properties: {
+      'Name': { title: text((j.fileName || accountName || 'contract')) },
+      'Contract file': { url: j.ndaUrl || null },
+      'Account': { rich_text: text(accountName) },
+      'Outcome': { select: { name: log_outcome } },
+      'Processed': { date: { start: today } },
+      'Notes': { rich_text: text(logNote) },
+    },
+  });
+
+  // One-line HTML fragment for the notification email.
+  const amtStr = nda.cycle_amount != null ? ((currency || '') + ' ' + nda.cycle_amount + '/' + (nda.cycle_length || ''))
+    : (nda.due_at_start != null ? ((currency || '') + ' ' + nda.due_at_start + ' at start') : '');
+  const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const email_line = '<li><b>' + esc(counterparty || accountName) + '</b> (' + esc(accountName) + ') \\u2014 '
+    + esc(nda.document_type || '') + '<br><b>Outcome:</b> ' + esc(log_outcome)
+    + (amtStr ? ' \\u2014 ' + esc(amtStr) : '')
+    + '<br><b>Effective:</b> ' + esc(nda.effective_date || '\\u2014')
+    + ' | <b>Term:</b> ' + esc(nda.term || '\\u2014')
+    + (nda.point_of_contact ? '<br><b>POC:</b> ' + esc(nda.point_of_contact) : '')
+    + (oq.length ? '<br><b>For review:</b> ' + esc(oq.join('; ')) : '')
+    + '</li>';
+
   out.push({
     json: {
       // Flat preview fields — this is what the dry run prints.
@@ -519,6 +573,10 @@ for (const item of $input.all()) {
       fin_dupe: finDupe,            // already recorded (Contract file match)
       fin_title,
       fin_requestBody,              // Notion POST /pages body (null when no row)
+      // --- intake log + notification ---
+      log_outcome,
+      log_requestBody,              // Notion POST to the Contract Intake Log
+      email_line,                   // HTML fragment for the digest email
       linked_to: client ? 'Client: ' + titleOf(client) : (partner ? 'Partner: ' + titleOf(partner) : 'NONE — link by hand'),
       ndaUrl: j.ndaUrl,
       requestBody: JSON.stringify({ parent: { database_id: NDA_DB_ID }, properties }),
@@ -600,6 +658,9 @@ const onePartner = keepOne('Keep One (Partners)', [1540, 300]);
 // Existing financials rows, for the Contract-file dedup on the financials write.
 const getEngagements = notionGetAll('Get Existing Engagements', FIN_DB_ID, [1760, 300]);
 const oneEngagement = keepOne('Keep One (Engagements)', [1980, 300]);
+// Processed-file log, for the "already completed" skip in Filter: Not Already Recorded.
+const getIntakeLog = notionGetAll('Get Intake Log', LOG_DB_ID, [2200, 300]);
+const oneIntakeLog = keepOne('Keep One (Intake Log)', [2420, 300]);
 
 // --- Discover candidate files ----------------------------------------------
 
@@ -746,7 +807,7 @@ const filterNew = createNode(
           // x.includes('') is TRUE, which would otherwise match everything.
           // Multiple agreements from one client are separate documents with
           // separate filenames, so they still each get their own record.
-          leftValue: "={{ $('Config').first().json.reviewAll === true || !$('Get Existing NDAs').all().some(p => (p.json.property_nda_file || '') === $json.ndaUrl || ((String(p.json.property_nda_file || '').split('?')[0].split('/').pop() || '').toLowerCase().replace(/[^a-z0-9]/g, '') === $json.fileKey && String(p.json.property_counterparty || '').toLowerCase().replace(/[^a-z0-9]/g, '') !== '' && ($json.acctKey.includes(String(p.json.property_counterparty || '').toLowerCase().replace(/[^a-z0-9]/g, '')) || String(p.json.property_counterparty || '').toLowerCase().replace(/[^a-z0-9]/g, '').includes($json.acctKey)))) }}",
+          leftValue: "={{ $('Config').first().json.reviewAll === true || (!$('Get Intake Log').all().some(p => (p.json.property_contract_file || '') === $json.ndaUrl) && !$('Get Existing NDAs').all().some(p => (p.json.property_nda_file || '') === $json.ndaUrl || ((String(p.json.property_nda_file || '').split('?')[0].split('/').pop() || '').toLowerCase().replace(/[^a-z0-9]/g, '') === $json.fileKey && String(p.json.property_counterparty || '').toLowerCase().replace(/[^a-z0-9]/g, '') !== '' && ($json.acctKey.includes(String(p.json.property_counterparty || '').toLowerCase().replace(/[^a-z0-9]/g, '')) || String(p.json.property_counterparty || '').toLowerCase().replace(/[^a-z0-9]/g, '').includes($json.acctKey))))) }}",
           rightValue: '',
           operator: { type: 'boolean', operation: 'true', singleValue: true },
         },
@@ -1030,6 +1091,119 @@ createFinancials.maxTries = 3;
 createFinancials.waitBetweenTries = 2000;
 
 // ---------------------------------------------------------------------------
+// Intake-log branch — one log row per processed file (marks it completed).
+// ---------------------------------------------------------------------------
+const logGate = createNode(
+  'Write Log?',
+  'n8n-nodes-base.if',
+  {
+    conditions: {
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'loose', version: 2 },
+      conditions: [
+        {
+          id: 'f2a0f0e2-1515-4a15-9015-000000000012',
+          leftValue: "={{ $('Config').first().json.dryRun }}",
+          rightValue: '',
+          operator: { type: 'boolean', operation: 'true', singleValue: true },
+        },
+      ],
+      combinator: 'and',
+    },
+    options: {},
+  },
+  { position: [4400, 1100], typeVersion: 2.2 },
+);
+
+const createLogRow = createNode(
+  'Create Intake Log Row',
+  'n8n-nodes-base.httpRequest',
+  {
+    method: 'POST',
+    url: 'https://api.notion.com/v1/pages',
+    authentication: 'predefinedCredentialType',
+    nodeCredentialType: 'notionApi',
+    sendHeaders: true,
+    headerParameters: { parameters: [{ name: 'Notion-Version', value: '2022-06-28' }] },
+    sendBody: true,
+    specifyBody: 'json',
+    jsonBody: '={{ $json.log_requestBody }}',
+    options: { batching: { batch: { batchSize: 1, batchInterval: 334 } } },
+  },
+  { position: [4620, 1100], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
+);
+createLogRow.retryOnFail = true;
+createLogRow.maxTries = 3;
+
+// ---------------------------------------------------------------------------
+// Notification branch — one digest email to Eve summarising the run, sent via
+// her Office365 account (Graph /me/sendMail). Only fires when files were
+// processed and not in dry run.
+// ---------------------------------------------------------------------------
+const aggregateForEmail = createNode(
+  'Collect for Email',
+  'n8n-nodes-base.aggregate',
+  { aggregate: 'aggregateAllItemData', options: {} },
+  { position: [4400, 1400], typeVersion: 1 },
+);
+
+const BUILD_EMAIL_CODE = `
+const rows = $input.first().json.data || [];
+if (!rows.length) return [];                     // nothing processed → no email
+const dryRun = (() => { try { return $('Config').first().json.dryRun; } catch (e) { return false; } })();
+if (dryRun) return [];
+
+const lines = rows.map(r => r.email_line).filter(Boolean).join('\\n');
+const created = rows.filter(r => r.log_outcome && r.log_outcome.indexOf('Skipped') !== 0).length;
+const skipped = rows.length - created;
+const today = (() => { try { return $now.toFormat('yyyy-MM-dd'); } catch (e) { return new Date().toISOString().slice(0,10); } })();
+
+const subject = 'Contract intake ' + today + ': ' + rows.length + ' processed ('
+  + created + ' recorded, ' + skipped + ' skipped)';
+const html = '<html><body>'
+  + '<p>The contract intake processed <b>' + rows.length + '</b> document'
+  + (rows.length > 1 ? 's' : '') + ' on ' + today + '.</p>'
+  + '<ul>' + lines + '</ul>'
+  + '<p style="color:#888;font-size:12px">Automated by the contract intake workflow. '
+  + 'Details are in the NDAs and Client engagement financials databases; every document is logged in Contract Intake Log.</p>'
+  + '</body></html>';
+
+const emailBody = {
+  message: {
+    subject,
+    body: { contentType: 'HTML', content: html },
+    toRecipients: [{ emailAddress: { address: ${JSON.stringify(NOTIFY_TO)} } }],
+  },
+  saveToSentItems: true,
+};
+return [{ json: { emailBody: JSON.stringify(emailBody) } }];
+`.trim();
+
+const buildEmail = createNode(
+  'Build Email',
+  'n8n-nodes-base.code',
+  { mode: 'runOnceForAllItems', jsCode: BUILD_EMAIL_CODE },
+  { position: [4620, 1400], typeVersion: 2 },
+);
+
+const sendEmail = createNode(
+  'Notify Eve',
+  'n8n-nodes-base.httpRequest',
+  {
+    method: 'POST',
+    url: 'https://graph.microsoft.com/v1.0/me/sendMail',
+    authentication: 'predefinedCredentialType',
+    nodeCredentialType: 'microsoftOutlookOAuth2Api',
+    sendBody: true,
+    specifyBody: 'json',
+    jsonBody: '={{ $json.emailBody }}',
+    options: {},
+  },
+  { position: [4840, 1400], typeVersion: 4.2, credentials: OUTLOOK_CREDENTIAL },
+);
+sendEmail.retryOnFail = true;
+sendEmail.maxTries = 3;
+
+// ---------------------------------------------------------------------------
 // Workflow
 // ---------------------------------------------------------------------------
 
@@ -1037,12 +1211,13 @@ export default createWorkflow('Ingest NDA Contracts', {
   nodes: [
     scheduleTrigger, config,
     getExistingNdas, oneNda, getClients, oneClient, getPartners, onePartner,
-    getEngagements, oneEngagement,
+    getEngagements, oneEngagement, getIntakeLog, oneIntakeLog,
     listAccounts, filterAccountFolders, listContracts, filterPdfs,
     buildCandidate, filterNew,
     downloadContract, extractPdf, buildPrompt, extractFields,
     mergeExtraction, buildRequest, hasNdaClauses, skipped, isDryRun, dryRunReport, createRecord,
     finGate, finDryRun, finDryRunReport, createFinancials,
+    logGate, createLogRow, aggregateForEmail, buildEmail, sendEmail,
   ],
   connections: [
     connect(scheduleTrigger, config),
@@ -1055,8 +1230,10 @@ export default createWorkflow('Ingest NDA Contracts', {
     connect(getPartners, onePartner),
     connect(onePartner, getEngagements),
     connect(getEngagements, oneEngagement),
+    connect(oneEngagement, getIntakeLog),
+    connect(getIntakeLog, oneIntakeLog),
     // Discover candidate files (after the reference-data chain completes)
-    connect(oneEngagement, listAccounts),
+    connect(oneIntakeLog, listAccounts),
     connect(listAccounts, filterAccountFolders),
     connect(filterAccountFolders, listContracts),
     connect(listContracts, filterPdfs),
@@ -1080,6 +1257,13 @@ export default createWorkflow('Ingest NDA Contracts', {
     connect(finGate, finDryRun, 0),                 // fin_create true → proceed
     connect(finDryRun, finDryRunReport, 0),         // dry run → preview
     connect(finDryRun, createFinancials, 1),        // live → create financials row
+    // Intake-log branch — log every processed file (live only)
+    connect(buildRequest, logGate),
+    connect(logGate, createLogRow, 1),              // not dry run → write log row
+    // Notification branch — one digest email per run (live only, if any processed)
+    connect(buildRequest, aggregateForEmail),
+    connect(aggregateForEmail, buildEmail),
+    connect(buildEmail, sendEmail),
   ],
   settings: { executionOrder: 'v1' },
 });
