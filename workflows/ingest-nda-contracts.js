@@ -550,10 +550,9 @@ const config = createNode(
   {
     assignments: {
       assignments: [
-        // DRY-RUN for item-1 development (expanded commercial extraction).
-        // Was live 2026-07-18; paused to review the new fields. Set back to
-        // false + republish once items 1+2 are done together.
-        { id: 'c1a0f0e2-1111-4a11-9111-aaaaaaaaaaaa', name: 'dryRun', value: true, type: 'boolean' },
+        // LIVE (items 1+2) as of 2026-07-27: writes both the NDA record and
+        // the reconciled Client engagement financials row. Set true to pause.
+        { id: 'c1a0f0e2-1111-4a11-9111-aaaaaaaaaaaa', name: 'dryRun', value: false, type: 'boolean' },
         // reviewAll bypasses the already-recorded dedup so a dry run re-extracts
         // EVERY contract (for reviewing extraction quality on the backlog). Safe
         // only alongside dryRun:true — it writes nothing. Set false for normal
