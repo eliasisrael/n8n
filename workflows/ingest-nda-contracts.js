@@ -51,6 +51,9 @@ const CONTRACTS_SUBFOLDER = 'Contracts';
 const NDA_DB_ID = '2378ebaf-15ee-8091-a178-e6cfda664c4e';
 const CLIENTS_DB_ID = '39b8f7e7-362f-4121-8389-4d9f5c26c1d4';
 const PARTNERS_DB_ID = '642b44e9-1363-4765-aaaf-702a708d6812';
+// Client engagement financials (item 2). Client db here relates to the same
+// Clients DB above, so the client match resolved for the NDA reuses directly.
+const FIN_DB_ID = '1c68ebaf-15ee-8062-80b2-fcb378557689';
 
 const EXTRACTION_MODEL = 'claude-sonnet-5';
 
@@ -373,6 +376,77 @@ for (const item of $input.all()) {
   }
 
   const text = (v) => [{ text: { content: String(v || '').substring(0, 2000) } }];
+
+  // -------------------------------------------------------------------------
+  // Item 2: build the Client engagement financials row (or decide to skip).
+  // Created for row:*/review:* actions; skipped for contingent/hourly/none.
+  // Deduped on the Contract file URL against existing financials rows.
+  // -------------------------------------------------------------------------
+  const FIN_DB_ID = ${JSON.stringify(FIN_DB_ID)};
+  let engagements = [];
+  try { engagements = $('Get Existing Engagements').all(); } catch (e) {}
+
+  const makeFinRow = financials_action.indexOf('row') === 0 || financials_action.indexOf('review') === 0;
+  const finDupe = engagements.some((p) => (p.json.property_contract_file || '') === (j.ndaUrl || ''));
+  const fin_create = makeFinRow && !finDupe;
+
+  const engTypes = Array.isArray(nda.engagement_type) ? nda.engagement_type.filter(Boolean) : [];
+  const primaryType = engTypes[0] || '';
+  const finDateForTitle = (nda.engagement_start_date && ISO.test(nda.engagement_start_date))
+    ? nda.engagement_start_date
+    : (nda.effective_date && ISO.test(nda.effective_date) ? nda.effective_date : '');
+  const fin_title = accountName
+    + (primaryType ? ' \\u2014 ' + primaryType : '')
+    + (finDateForTitle ? ' \\u2014 ' + finDateForTitle : '');
+
+  let fin_requestBody = null;
+  if (makeFinRow) {
+    // Only send select values that already exist as options, so automation
+    // never silently creates new options on this critical DB.
+    const okCurrency = (currency === 'USD' || currency === 'EUR') ? currency : null;
+    const okTerms = ['Due on receipt', 'Net 10', 'Net 15', 'Net 30', 'Net 45'].includes(nda.payment_terms_normalized)
+      ? nda.payment_terms_normalized : null;
+    const okCycleLen = ['Month', 'Quarter', 'Year'].includes(nda.cycle_length) ? nda.cycle_length : null;
+
+    const finProps = {
+      '-': { title: text(fin_title) },                          // the title property is literally named "-"
+      'Contract file': { url: j.ndaUrl || null },               // dedup key
+      'Point of contact': { rich_text: text(nda.point_of_contact) },
+      'Non-standard obligations': { rich_text: text(nda.special_obligations) },
+      'Relationship renewal': { select: { name: ['Yes', 'No', 'Unknown'].includes(nda.relationship_auto_renew) ? nda.relationship_auto_renew : 'Unknown' } },
+      'Renewal terms': { rich_text: text(nda.renewal_terms) },
+      'Termination notice': { rich_text: text(nda.termination_notice) },
+      'Deliverables': { rich_text: text(nda.deliverables) },
+      'Invoicing schedule': { rich_text: text(nda.invoicing_schedule) },
+    };
+    if (okCurrency) finProps['Currency'] = { select: { name: okCurrency } };
+    if (nda.cycle_amount != null) finProps['Cycle payment'] = { number: nda.cycle_amount };
+    if (okCycleLen) finProps['Cycle length'] = { select: { name: okCycleLen } };
+    if (nda.cycle_count != null) finProps['Cycle count'] = { number: nda.cycle_count };
+    if (nda.due_at_start != null) finProps['Due at start'] = { number: nda.due_at_start };
+    if (nda.due_at_end != null) finProps['Due at end'] = { number: nda.due_at_end };
+    if (okTerms) finProps['Payment terms'] = { select: { name: okTerms } };
+    if (engTypes.length) finProps['Engagement type'] = { multi_select: engTypes.map((t) => ({ name: t })) };
+    if (nda.engagement_start_date && ISO.test(nda.engagement_start_date)) {
+      const range = { start: nda.engagement_start_date };
+      if (nda.engagement_end_date && ISO.test(nda.engagement_end_date)) range.end = nda.engagement_end_date;
+      finProps['Engagement start&end'] = { date: range };
+    }
+    if (nda.effective_date && ISO.test(nda.effective_date)) finProps['Effective date'] = { date: { start: nda.effective_date } };
+    if (client) finProps['Client db'] = { relation: [{ id: client.json.id }] };
+
+    // Page body: fee prose + open questions + the sales-pipeline reminder.
+    const blk = (type, content) => ({ object: 'block', type, [type]: { rich_text: [{ type: 'text', text: { content: String(content).slice(0, 1900) } }] } });
+    const children = [];
+    if (nda.fees) { children.push(blk('heading_3', 'Fee detail')); children.push(blk('paragraph', nda.fees)); }
+    const oq = (Array.isArray(nda.open_questions) ? nda.open_questions.slice() : []);
+    oq.push('Sales pipeline not linked \\u2014 link this engagement to its pipeline item.');
+    if (financials_action.indexOf('review') === 0) oq.push('Fee type unclassified \\u2014 review the fee structure and amounts.');
+    children.push(blk('heading_3', 'For review'));
+    oq.forEach((q) => children.push(blk('bulleted_list_item', q)));
+
+    fin_requestBody = JSON.stringify({ parent: { database_id: FIN_DB_ID }, properties: finProps, children });
+  }
   const properties = {
     '"<co> NDA"': { title: text(title) },
     'Counterparty': { rich_text: text(counterparty) },
@@ -440,6 +514,11 @@ for (const item of $input.all()) {
       payment_terms_normalized: nda.payment_terms_normalized || null,
       engagement_type: Array.isArray(nda.engagement_type) ? nda.engagement_type : [],
       financials_action,            // what item 2 will do (computed from fee_type)
+      // --- item 2 financials write ---
+      fin_create,                   // true → a financials row will be created
+      fin_dupe: finDupe,            // already recorded (Contract file match)
+      fin_title,
+      fin_requestBody,              // Notion POST /pages body (null when no row)
       linked_to: client ? 'Client: ' + titleOf(client) : (partner ? 'Partner: ' + titleOf(partner) : 'NONE — link by hand'),
       ndaUrl: j.ndaUrl,
       requestBody: JSON.stringify({ parent: { database_id: NDA_DB_ID }, properties }),
@@ -519,6 +598,9 @@ const getClients = notionGetAll('Get Clients', CLIENTS_DB_ID, [880, 300]);
 const oneClient = keepOne('Keep One (Clients)', [1100, 300]);
 const getPartners = notionGetAll('Get Partners', PARTNERS_DB_ID, [1320, 300]);
 const onePartner = keepOne('Keep One (Partners)', [1540, 300]);
+// Existing financials rows, for the Contract-file dedup on the financials write.
+const getEngagements = notionGetAll('Get Existing Engagements', FIN_DB_ID, [1760, 300]);
+const oneEngagement = keepOne('Keep One (Engagements)', [1980, 300]);
 
 // --- Discover candidate files ----------------------------------------------
 
@@ -872,6 +954,83 @@ createRecord.maxTries = 3;
 createRecord.waitBetweenTries = 2000;
 
 // ---------------------------------------------------------------------------
+// Item 2: financials write branch (parallel to the NDA write, off the same
+// Build NDA Record item). Independent gate: create a Client engagement
+// financials row when fin_create is true (row:*/review:* and not a dupe).
+// ---------------------------------------------------------------------------
+const finGate = createNode(
+  'Create Financials Row?',
+  'n8n-nodes-base.if',
+  {
+    conditions: {
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'loose', version: 2 },
+      conditions: [
+        {
+          id: 'f2a0f0e2-1313-4a13-9013-000000000010',
+          leftValue: '={{ $json.fin_create }}',
+          rightValue: '',
+          operator: { type: 'boolean', operation: 'true', singleValue: true },
+        },
+      ],
+      combinator: 'and',
+    },
+    options: {},
+  },
+  { position: [4400, 760], typeVersion: 2.2 },
+);
+
+const finDryRun = createNode(
+  'Financials Dry Run?',
+  'n8n-nodes-base.if',
+  {
+    conditions: {
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'loose', version: 2 },
+      conditions: [
+        {
+          id: 'f2a0f0e2-1414-4a14-9014-000000000011',
+          leftValue: "={{ $('Config').first().json.dryRun }}",
+          rightValue: '',
+          operator: { type: 'boolean', operation: 'true', singleValue: true },
+        },
+      ],
+      combinator: 'and',
+    },
+    options: {},
+  },
+  { position: [4620, 760], typeVersion: 2.2 },
+);
+
+// Dry run terminates here — the item carries fin_title / fin_requestBody / the
+// flat commercial preview fields.
+const finDryRunReport = createNode(
+  'Would Create Financials (Dry Run)',
+  'n8n-nodes-base.noOp',
+  {},
+  { position: [4840, 660], typeVersion: 1 },
+);
+
+const createFinancials = createNode(
+  'Create Financials Record',
+  'n8n-nodes-base.httpRequest',
+  {
+    method: 'POST',
+    url: 'https://api.notion.com/v1/pages',
+    authentication: 'predefinedCredentialType',
+    nodeCredentialType: 'notionApi',
+    sendHeaders: true,
+    headerParameters: { parameters: [{ name: 'Notion-Version', value: '2022-06-28' }] },
+    sendBody: true,
+    specifyBody: 'json',
+    jsonBody: '={{ $json.fin_requestBody }}',
+    options: { batching: { batch: { batchSize: 1, batchInterval: 334 } } },
+  },
+  { position: [4840, 860], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
+);
+createFinancials.retryOnFail = true;
+createFinancials.maxTries = 3;
+createFinancials.waitBetweenTries = 2000;
+
+// ---------------------------------------------------------------------------
 // Workflow
 // ---------------------------------------------------------------------------
 
@@ -879,10 +1038,12 @@ export default createWorkflow('Ingest NDA Contracts', {
   nodes: [
     scheduleTrigger, config,
     getExistingNdas, oneNda, getClients, oneClient, getPartners, onePartner,
+    getEngagements, oneEngagement,
     listAccounts, filterAccountFolders, listContracts, filterPdfs,
     buildCandidate, filterNew,
     downloadContract, extractPdf, buildPrompt, extractFields,
     mergeExtraction, buildRequest, hasNdaClauses, skipped, isDryRun, dryRunReport, createRecord,
+    finGate, finDryRun, finDryRunReport, createFinancials,
   ],
   connections: [
     connect(scheduleTrigger, config),
@@ -893,8 +1054,10 @@ export default createWorkflow('Ingest NDA Contracts', {
     connect(getClients, oneClient),
     connect(oneClient, getPartners),
     connect(getPartners, onePartner),
-    // Discover candidate files
-    connect(onePartner, listAccounts),
+    connect(onePartner, getEngagements),
+    connect(getEngagements, oneEngagement),
+    // Discover candidate files (after the reference-data chain completes)
+    connect(oneEngagement, listAccounts),
     connect(listAccounts, filterAccountFolders),
     connect(filterAccountFolders, listContracts),
     connect(listContracts, filterPdfs),
@@ -913,6 +1076,11 @@ export default createWorkflow('Ingest NDA Contracts', {
     connect(hasNdaClauses, skipped, 1),         // none found → skip, but stay visible
     connect(isDryRun, dryRunReport, 0),
     connect(isDryRun, createRecord, 1),
+    // Financials write branch — parallel fork off the same built item
+    connect(buildRequest, finGate),
+    connect(finGate, finDryRun, 0),                 // fin_create true → proceed
+    connect(finDryRun, finDryRunReport, 0),         // dry run → preview
+    connect(finDryRun, createFinancials, 1),        // live → create financials row
   ],
   settings: { executionOrder: 'v1' },
 });
