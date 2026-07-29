@@ -581,6 +581,24 @@ This bites when a **upstream Code node conditionally builds the body**: on the h
 
 ---
 
+## LLM Extraction via HTTP Request (Anthropic tool use)
+
+### `max_tokens` truncation silently drops the TAIL fields of a tool call
+When forcing structured output with `tool_choice` on the Anthropic Messages API, the model emits the tool's JSON arguments **in schema order**. If the response hits `max_tokens`, generation stops mid-JSON — the API still returns a `tool_use` block, but it is **incomplete**: every field after the cutoff is simply absent. There is no error; the node succeeds. So a too-low `max_tokens` corrupts the LAST properties in your schema while the early ones look perfect.
+
+Real incident (Ingest NDA Contracts, 2026-07-29): `max_tokens: 2000` truncated **7 of 39** documents. The `record_nda` schema put verbose prose fields (`special_provisions`, `deliverables`, `open_questions`) before the structured commercial values (`fee_type`, `due_at_start`, `due_at_end`) and the addendum flags (`is_addendum`) — so on long documents those tail fields came back missing/undefined every run, while the earlier `fees` prose was always fine. This looked for days like "the model can't structure fees"; it was truncation. Raising to `max_tokens: 8000` dropped truncation to 0 and every field populated. The longest complete response was ~2226 tokens — just over the old cap.
+
+Rules:
+- **Detect it, don't infer it.** The clean signal is `response.stop_reason === 'max_tokens'`. Gate on that directly rather than guessing from which fields are empty.
+- **Set `max_tokens` well above a full tool call** — you only pay for tokens actually generated, so generous headroom is free. Size it against the *largest* expected output, not the average.
+- **Order the schema so the cheap, critical structured fields come FIRST** and the long free-text/optional fields last. Then even an unexpected truncation loses the least-important data.
+- A one-shot **retry does not help** if the retry uses the same `max_tokens` — a re-rolled truncation is still a truncation. Fix the cap first; use retry only for genuinely stochastic misses.
+
+### Re-rolling a suspicious extraction (deterministic detect + one retry)
+For non-deterministic extraction misses, detect a *suspicious* result deterministically and re-call the model once, rather than tweaking prompt wording (which just shifts an invisible distribution). n8n has no native "retry a node on non-error output," and `retryOnFail` only fires on a thrown error and re-runs the same node — so build it: after the model call, a pure Code node flags suspicion (e.g. `stop_reason === 'max_tokens'`, or prose names a fee but no structured amount was captured and the type isn't one that legitimately has none), an IF routes only the suspicious items through a duplicated extract→model branch, and both branches converge via a **Merge (append)** so the downstream (and any digest/aggregate) runs **once**. Always RETURN a best-effort result on give-up (flag it), never throw — a throw-based retry can't keep the last result. Keep `alwaysOutputData: true` on the recombine merge so an empty branch (the common "nothing suspicious" case) doesn't stall the chain.
+
+---
+
 ## Data Handling Patterns
 
 ### Use Set nodes + field-based Merge for reliable multi-item data pairing

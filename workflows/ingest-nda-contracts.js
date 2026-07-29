@@ -168,10 +168,10 @@ const EXTRACTION_PROMPT = [
   'symbol, no commas (write 3300, not "$3,300").',
   '- fee_type: one of retainer (recurring fixed amount per period) | hourly |',
   '  one_time | per_event | contingent (e.g. % of a transaction / finder fee) |',
-  '  none. This governs what is forecastable. A public-appearance / speaking',
-  '  agreement with a fixed appearance fee is "per_event" (or "one_time" if a',
-  '  single fixed fee). NEVER leave fee_type blank when a fee exists — pick the',
-  '  closest type.',
+  '  none. This governs what is forecastable. A public-appearance / speaking /',
+  '  keynote agreement is ALWAYS "per_event" — even a single appearance with one',
+  '  fixed fee (never "one_time" for an appearance). NEVER leave fee_type blank',
+  '  when a fee exists — pick the closest type.',
   '- cycle_amount: the recurring per-period amount, as a number, ONLY when',
   '  fee_type is "retainer". null for hourly/contingent/one_time/per_event —',
   '  do NOT invent a recurring amount for non-recurring fees.',
@@ -181,9 +181,12 @@ const EXTRACTION_PROMPT = [
   '- currency: "USD" | "EUR" | "Other". If ANY amount (cycle_amount,',
   '  due_at_start, due_at_end) is set, currency MUST be set — infer "USD" from a',
   '  "$" and "EUR" from "€". Only null when there is genuinely no amount at all.',
-  '- due_at_start: a one-time/upfront amount due at the start (e.g. a one-time',
-  '  fee, a sponsorship fee due on execution), as a number; null if none.',
-  '- due_at_end: a final/one-time amount due at the end, as a number; null if none.',
+  '- due_at_start: an upfront amount due at the START of the engagement — a',
+  '  one-time fee, a deposit, a sponsorship fee due on execution, or an appearance',
+  '  PREPARATION / ADVANCE / RESERVATION fee due on signing. Plain number; null if none.',
+  '- due_at_end: an amount due at or after the END / delivery — for a public',
+  '  appearance this is the APPEARANCE / SESSION / SPEAKING rate due after the',
+  '  event. Plain number; null if none.',
   '- payment_terms_normalized: one of "Due on receipt" | "Net 10" | "Net 15" |',
   '  "Net 30" | "Net 45" | "Other" | null (null if not stated).',
   '- engagement_type: one or more labels from EXACTLY this list, best-fitting',
@@ -193,6 +196,33 @@ const EXTRACTION_PROMPT = [
   '  at least one when the agreement type is determinable (advisory/consulting',
   '  → "Advisor"; a standalone NDA exploring a deal → "Explore partnership";',
   '  a speaking engagement → "Public appearance").',
+  '',
+  'APPEARANCE / SPEAKING FEE STRUCTURE. Speaking, keynote and public-appearance',
+  'agreements usually split the fee into two parts: a PREPARATION / ADVANCE /',
+  'RESERVATION fee due on signing, and the APPEARANCE / SESSION rate due after',
+  'the event. Map them precisely:',
+  '- Advance / preparation / reservation fee (due on signing) -> due_at_start.',
+  '- Appearance / session / speaking rate (due after the event) -> due_at_end.',
+  '- A single flat appearance fee with no split -> due_at_end, due_at_start null.',
+  '- Use the amounts EXACTLY as written. Do NOT add, subtract, net ("net of',
+  '  advances"), average, halve, or otherwise compute — if the rate is stated as',
+  '  $3,500 and the advance as $875, then due_at_end = 3500 and due_at_start =',
+  '  875, whatever "net of" language appears. Never emit a number not written in',
+  '  the fee text.',
+  '- If the fee text names ANY amount, at least one of due_at_start / due_at_end',
+  '  MUST be non-null — never leave both null when a dollar figure is present.',
+  '',
+  'ADDENDUM DETECTION. Some documents are an ADDENDUM / AMENDMENT to an existing',
+  'agreement (often a short email PDF), not a standalone contract.',
+  '- is_addendum: "Yes" if this document modifies, amends, extends, or revises an',
+  '  existing agreement rather than being the primary contract itself; else "No".',
+  '- addendum_reference: when is_addendum is "Yes", quote what it amends (e.g.',
+  '  "Advisory Agreement dated 2025-07-23" or "the existing IDENTOS retainer").',
+  '  Empty string otherwise.',
+  '- When is_addendum is "Yes", fill the commercial/structured fields with ONLY',
+  '  the terms the addendum CHANGES or restates (a new monthly amount, an',
+  '  extended end date, a new POC). Leave every field it does not touch',
+  '  empty/null \\u2014 do NOT carry unchanged terms over from the original.',
 ].join('\n');
 
 // The tool schema forces well-shaped JSON back, so no response parsing is
@@ -249,10 +279,13 @@ const EXTRACTION_TOOL = {
       cycle_length: { type: ['string', 'null'], enum: ['Month', 'Quarter', 'Year', null], description: 'Recurring period for a retainer; null otherwise' },
       cycle_count: { type: ['number', 'null'], description: 'Number of cycles if bounded/countable; null if open-ended' },
       currency: { type: ['string', 'null'], enum: ['USD', 'EUR', 'Other', null], description: 'Currency of the amounts; null if no amount' },
-      due_at_start: { type: ['number', 'null'], description: 'One-time/upfront amount due at start (plain number); null if none' },
-      due_at_end: { type: ['number', 'null'], description: 'Final/one-time amount due at end (plain number); null if none' },
+      due_at_start: { type: ['number', 'null'], description: 'Upfront amount due at the start — one-time fee, deposit, sponsorship-on-execution, or an appearance preparation/advance/reservation fee (plain number, exactly as written, no netting); null if none' },
+      due_at_end: { type: ['number', 'null'], description: 'Amount due at/after the end — for an appearance, the appearance/session/speaking rate due after the event (plain number, exactly as written, no netting); null if none' },
       payment_terms_normalized: { type: ['string', 'null'], enum: ['Due on receipt', 'Net 10', 'Net 15', 'Net 30', 'Net 45', 'Other', null], description: 'Normalized payment terms for the DB select; null if not stated' },
       engagement_type: { type: 'array', items: { type: 'string', enum: ['Internal', 'Advisor', 'Advisory board', 'Workshop', 'Keynote', 'Management board', 'Supervisory board', 'External', 'Public appearance', 'Video production', 'Explore partnership', 'Sponsorship', 'Writing'] }, description: 'Zero or more labels from the fixed list, best-fitting the agreement' },
+      // Addendum handling (Stage 1)
+      is_addendum: { type: 'string', enum: ['Yes', 'No'], description: 'Yes if this amends/extends an existing agreement rather than being the primary contract' },
+      addendum_reference: { type: 'string', description: 'What the addendum amends (quoted); empty if not an addendum' },
     },
     required: [
       'counterparty_legal_name', 'effective_date', 'term', 'term_end_date',
@@ -263,9 +296,31 @@ const EXTRACTION_TOOL = {
       'fees', 'deliverables', 'point_of_contact', 'special_obligations', 'open_questions',
       'fee_type', 'cycle_amount', 'cycle_length', 'cycle_count', 'currency',
       'due_at_start', 'due_at_end', 'payment_terms_normalized', 'engagement_type',
+      'is_addendum', 'addendum_reference',
     ],
   },
 };
+
+// Shared so the primary extraction nodes and the retry copies can never drift:
+// there is one source of truth for the prompt, the tool schema, and the request
+// body. (These produce byte-identical parameter strings, so refactoring the
+// primary nodes onto them is a no-op against what is already deployed.)
+const PROMPT_ASSIGN_VALUE = '=' + EXTRACTION_PROMPT
+  + "\n\nToday's date is {{ $now.toFormat('yyyy-MM-dd') }}."
+  + ' Judge `expired` strictly against that date.';
+const CONTRACT_TEXT_VALUE = "={{ ($json.text || '').slice(0, 60000) }}";
+const TOOLS_JSON_VALUE = JSON.stringify([EXTRACTION_TOOL]);
+// max_tokens must comfortably exceed a full record_nda tool call. At 2000 the
+// response TRUNCATED (stop_reason "max_tokens") on ~18% of documents, silently
+// dropping the schema's tail fields — fee_type/due_at_start/due_at_end and even
+// is_addendum/addendum_reference — while the earlier `fees` prose survived. That
+// truncation, not the model misreading fees, was the real cause of the missing
+// structured amounts. A full extraction is well under 4k tokens; 8000 is safe
+// headroom and you only pay for tokens actually generated.
+const ANTHROPIC_JSON_BODY = '={{ JSON.stringify({ model: ' + JSON.stringify(EXTRACTION_MODEL)
+  + ', max_tokens: 8000, tools: JSON.parse($json.toolsJson)'
+  + ', tool_choice: { type: "tool", name: "record_nda" }'
+  + ', messages: [{ role: "user", content: $json.prompt + "\\n\\n--- CONTRACT ---\\n\\n" + $json.contractText }] }) }}';
 
 // ---------------------------------------------------------------------------
 // Code: assemble the Notion create payload (pure in-memory JSON/string work —
@@ -320,6 +375,9 @@ for (const item of $input.all()) {
   const nda = (tool && tool.input) || {};
 
   const accountName = j.accountName || '';
+  // Set by the retry branch: this item already went through one automatic
+  // re-extraction. Used only to word the review note; the routing is unchanged.
+  const retried = j._retried === true;
 
   // Models sometimes emit a literal placeholder instead of an empty string, and
   // "<UNKNOWN>" is truthy — it would land in Notion verbatim. Treat any
@@ -396,7 +454,73 @@ for (const item of $input.all()) {
   let engagements = [];
   try { engagements = $('Get Existing Engagements').all(); } catch (e) {}
 
-  const makeFinRow = financials_action.indexOf('row') === 0 || financials_action.indexOf('review') === 0;
+  // -----------------------------------------------------------------------
+  // Addendum handling (Stage 1). An addendum amends an existing engagement:
+  // update the matched row on an UNAMBIGUOUS match; otherwise hold for review.
+  // Addenda never CREATE a financials row here (the create-from-original case
+  // is Stage 2). "Unambiguous" = exactly one candidate row for the client, or
+  // the referenced date narrows the client's rows to exactly one.
+  // -----------------------------------------------------------------------
+  const isAddendum = nda.is_addendum === 'Yes';
+  const engCurrency = (currency === 'USD' || currency === 'EUR') ? currency : null;
+  const engTerms = ['Due on receipt', 'Net 10', 'Net 15', 'Net 30', 'Net 45'].includes(nda.payment_terms_normalized) ? nda.payment_terms_normalized : null;
+  const engCycleLen = ['Month', 'Quarter', 'Year'].includes(nda.cycle_length) ? nda.cycle_length : null;
+  // Only the fields the addendum actually states — a partial update.
+  function changedFields() {
+    const u = {};
+    if (engCurrency) u['Currency'] = { select: { name: engCurrency } };
+    if (nda.cycle_amount != null) u['Cycle payment'] = { number: nda.cycle_amount };
+    if (engCycleLen) u['Cycle length'] = { select: { name: engCycleLen } };
+    if (nda.cycle_count != null) u['Cycle count'] = { number: nda.cycle_count };
+    if (nda.due_at_start != null) u['Due at start'] = { number: nda.due_at_start };
+    if (nda.due_at_end != null) u['Due at end'] = { number: nda.due_at_end };
+    if (engTerms) u['Payment terms'] = { select: { name: engTerms } };
+    if (nda.point_of_contact) u['Point of contact'] = { rich_text: text(nda.point_of_contact) };
+    if (nda.special_obligations) u['Non-standard obligations'] = { rich_text: text(nda.special_obligations) };
+    if (nda.renewal_terms) u['Renewal terms'] = { rich_text: text(nda.renewal_terms) };
+    if (nda.termination_notice) u['Termination notice'] = { rich_text: text(nda.termination_notice) };
+    if (nda.deliverables) u['Deliverables'] = { rich_text: text(nda.deliverables) };
+    if (nda.invoicing_schedule) u['Invoicing schedule'] = { rich_text: text(nda.invoicing_schedule) };
+    if (nda.engagement_start_date && ISO.test(nda.engagement_start_date)) {
+      const r = { start: nda.engagement_start_date };
+      if (nda.engagement_end_date && ISO.test(nda.engagement_end_date)) r.end = nda.engagement_end_date;
+      u['Engagement start&end'] = { date: r };
+    }
+    return u;
+  }
+
+  let addendum_action = null, addendum_target_id = null, addendum_target_title = '', addendum_requestBody = null;
+  if (isAddendum) {
+    // Candidate rows for this client (financials titles carry the client name).
+    let cands = engagements.filter((p) => {
+      const t = norm(titleOf(p));
+      return t && norm(accountName) && (t.includes(norm(accountName)) || norm(accountName).includes(t.split(' ')[0] || '###'));
+    });
+    // Narrow by the referenced/engagement date if more than one.
+    if (cands.length > 1) {
+      const refDate = (nda.effective_date && ISO.test(nda.effective_date)) ? nda.effective_date
+        : ((nda.engagement_start_date && ISO.test(nda.engagement_start_date)) ? nda.engagement_start_date : null);
+      if (refDate) {
+        const near = cands.filter((p) => {
+          const d = p.json.property_effective_date && p.json.property_effective_date.start;
+          return d && Math.abs((new Date(d) - new Date(refDate)) / 86400000) <= 60;
+        });
+        if (near.length === 1) cands = near;
+      }
+    }
+    if (cands.length === 1) {
+      addendum_action = 'update';
+      addendum_target_id = cands[0].json.id;
+      addendum_target_title = titleOf(cands[0]);
+      addendum_requestBody = JSON.stringify({ properties: changedFields() });
+    } else if (cands.length > 1) {
+      addendum_action = 'review: ambiguous (' + cands.length + ' candidate rows)';
+    } else {
+      addendum_action = 'review: no existing row';
+    }
+  }
+
+  const makeFinRow = !isAddendum && (financials_action.indexOf('row') === 0 || financials_action.indexOf('review') === 0);
   const finDupe = engagements.some((p) => (p.json.property_contract_file || '') === (j.ndaUrl || ''));
   const fin_create = makeFinRow && !finDupe;
 
@@ -451,7 +575,9 @@ for (const item of $input.all()) {
     if (nda.fees) { children.push(blk('heading_3', 'Fee detail')); children.push(blk('paragraph', nda.fees)); }
     const oq = (Array.isArray(nda.open_questions) ? nda.open_questions.slice() : []);
     oq.push('Sales pipeline not linked \\u2014 link this engagement to its pipeline item.');
-    if (financials_action.indexOf('review') === 0) oq.push('Fee type unclassified \\u2014 review the fee structure and amounts.');
+    if (financials_action.indexOf('review') === 0) oq.push(retried
+      ? 'Automatic re-extraction still found no structured fee amount \\u2014 verify the fee manually (the amounts are in the Fee detail above).'
+      : 'Fee type unclassified \\u2014 review the fee structure and amounts.');
     children.push(blk('heading_3', 'For review'));
     oq.forEach((q) => children.push(blk('bulleted_list_item', q)));
 
@@ -485,16 +611,23 @@ for (const item of $input.all()) {
   const LOG_DB_ID = ${JSON.stringify(LOG_DB_ID)};
   const ndaCreated = nda.confidentiality_found !== 'No';   // passes Has NDA Clauses
   let log_outcome;
-  if (ndaCreated && fin_create) log_outcome = 'NDA + Financials';
+  if (isAddendum && addendum_action === 'update') log_outcome = 'Addendum applied';
+  else if (isAddendum) log_outcome = 'Addendum: needs review';
+  else if (ndaCreated && fin_create) log_outcome = 'NDA + Financials';
   else if (ndaCreated) log_outcome = 'NDA record';
   else if (fin_create) log_outcome = 'Financials row';
   else if (financials_action.indexOf('skip: not forecastable') === 0) log_outcome = 'Skipped: not forecastable';
   else log_outcome = 'Skipped: no clauses';
 
   const oq = Array.isArray(nda.open_questions) ? nda.open_questions : [];
+  // Human-readable summary of the changed fields (for addendum log/email).
+  const changedList = isAddendum && addendum_requestBody
+    ? Object.keys(JSON.parse(addendum_requestBody).properties).join(', ') : '';
   const logNote = [
     (nda.document_type || '').trim(),
-    nda.fees ? ('Fee: ' + nda.fees) : '',
+    isAddendum ? ('Addendum of: ' + (nda.addendum_reference || '?')) : '',
+    (isAddendum && addendum_target_title) ? ('-> row: ' + addendum_target_title + (changedList ? (' (changed: ' + changedList + ')') : '')) : '',
+    (!isAddendum && nda.fees) ? ('Fee: ' + nda.fees) : '',
     oq.length ? (oq.length + ' open question' + (oq.length > 1 ? 's' : '')) : '',
   ].filter(Boolean).join(' | ');
   const log_requestBody = JSON.stringify({
@@ -516,6 +649,9 @@ for (const item of $input.all()) {
   const email_line = '<li><b>' + esc(counterparty || accountName) + '</b> (' + esc(accountName) + ') \\u2014 '
     + esc(nda.document_type || '') + '<br><b>Outcome:</b> ' + esc(log_outcome)
     + (amtStr ? ' \\u2014 ' + esc(amtStr) : '')
+    + (isAddendum ? '<br><b>Amends:</b> ' + esc(nda.addendum_reference || '?')
+        + (addendum_target_title ? ' \\u2192 <i>' + esc(addendum_target_title) + '</i>' : '')
+        + (changedList ? '<br><b>Changed:</b> ' + esc(changedList) : '') : '')
     + '<br><b>Effective:</b> ' + esc(nda.effective_date || '\\u2014')
     + ' | <b>Term:</b> ' + esc(nda.term || '\\u2014')
     + (nda.point_of_contact ? '<br><b>POC:</b> ' + esc(nda.point_of_contact) : '')
@@ -543,6 +679,7 @@ for (const item of $input.all()) {
       term_end_date: endDate,        // the input it was computed from
       expired_model: nda.expired,    // the model's own read, for comparison
       today,
+      retried,                       // true → this item went through one auto re-extraction
       // --- commercial terms (item 1) — preview only; item 2 maps these into
       // the Client engagement financials record ---
       engagement_start_date: nda.engagement_start_date || null,
@@ -573,6 +710,12 @@ for (const item of $input.all()) {
       fin_dupe: finDupe,            // already recorded (Contract file match)
       fin_title,
       fin_requestBody,              // Notion POST /pages body (null when no row)
+      // --- addendum handling (Stage 1) ---
+      is_addendum: isAddendum,
+      addendum_action,              // 'update' | 'review: ...' | null
+      addendum_target_id,           // financials page id to PATCH (when update)
+      addendum_target_title,
+      addendum_requestBody,         // Notion PATCH body (properties only)
       // --- intake log + notification ---
       log_outcome,
       log_requestBody,              // Notion POST to the Contract Intake Log
@@ -851,20 +994,18 @@ const buildPrompt = createNode(
         {
           id: 'b2a0f0e2-1010-4a10-9010-000000000004',
           name: 'prompt',
-          value: '=' + EXTRACTION_PROMPT
-            + "\n\nToday's date is {{ $now.toFormat('yyyy-MM-dd') }}."
-            + ' Judge `expired` strictly against that date.',
+          value: PROMPT_ASSIGN_VALUE,
           type: 'string',
         },
         // NDAs are short; the cap only guards against a pathological PDF.
-        { id: 'b2a0f0e2-1111-4a11-9011-000000000005', name: 'contractText', value: "={{ ($json.text || '').slice(0, 60000) }}", type: 'string' },
+        { id: 'b2a0f0e2-1111-4a11-9011-000000000005', name: 'contractText', value: CONTRACT_TEXT_VALUE, type: 'string' },
         // The tool schema is carried as a LITERAL string (no leading '='), so
         // n8n never parses it as an expression. Inlining it into the request
         // expression broke the node: the schema contains '}}' sequences (e.g.
         // '"enum":["Yes","No"]}}'), and n8n's parser ends an expression at the
         // first '}}' it sees — producing "invalid syntax". Keep brace-heavy
         // JSON out of expressions and JSON.parse it back at point of use.
-        { id: 'b2a0f0e2-1212-4a12-9012-000000000007', name: 'toolsJson', value: JSON.stringify([EXTRACTION_TOOL]), type: 'string' },
+        { id: 'b2a0f0e2-1212-4a12-9012-000000000007', name: 'toolsJson', value: TOOLS_JSON_VALUE, type: 'string' },
       ],
     },
     options: {},
@@ -890,10 +1031,7 @@ const extractFields = createNode(
     sendBody: true,
     specifyBody: 'json',
     // Must stay a single-line, brace-light expression — see toolsJson above.
-    jsonBody: '={{ JSON.stringify({ model: ' + JSON.stringify(EXTRACTION_MODEL)
-      + ', max_tokens: 2000, tools: JSON.parse($json.toolsJson)'
-      + ', tool_choice: { type: "tool", name: "record_nda" }'
-      + ', messages: [{ role: "user", content: $json.prompt + "\\n\\n--- CONTRACT ---\\n\\n" + $json.contractText }] }) }}',
+    jsonBody: ANTHROPIC_JSON_BODY,
     options: {
       timeout: 120000,
       // Throttle to one contract at a time with a gap between calls, so a
@@ -916,6 +1054,180 @@ const mergeExtraction = createNode(
   { mode: 'combine', combineBy: 'combineByPosition', options: {} },
   { position: [3960, 300], typeVersion: 3 },
 );
+
+// ---------------------------------------------------------------------------
+// Guardrail: single automatic re-extraction on a SUSPICIOUS result.
+//
+// The model is non-deterministic on multi-part fees (a speaking agreement with
+// an advance + an appearance rate extracted cleanly in one slot and blank in
+// the next, same run, same prompt). Rather than chase that with prompt wording,
+// detect the tell deterministically — the prose `fees` names an amount but NO
+// structured amount (cycle_amount/due_at_start/due_at_end) was captured, and the
+// fee_type isn't one that legitimately carries no fixed amount — and re-roll the
+// extraction ONCE. One independent retry takes a ~1/40 miss to ~1/1600.
+//
+// The predicate mirrors Guard 2 in Build NDA Record, so detection and the
+// downstream "review: unclassified fee" routing always agree. If the retry is
+// still suspicious we record it and flag it (never drop, never abort): the item
+// carries `_retried` so Build NDA Record can word the review note accordingly.
+// ---------------------------------------------------------------------------
+const FLAG_SUSPICIOUS_CODE = `
+const FEE_RE = /[$€£]\\s?[\\d,]|\\bUSD\\b|\\bEUR\\b|\\bper\\b[^.]*\\b(day|hour|month|year)\\b/i;
+return $input.all().map((item) => {
+  const j = item.json || {};
+  const tool = (j.content || []).find((c) => c && c.type === 'tool_use');
+  const nda = (tool && tool.input) || {};
+  // A response cut off at max_tokens is missing its tail-end schema fields (the
+  // structured commercial values, addendum flags) even when the earlier prose
+  // looks fine. That is inherently suspicious regardless of the fee text — the
+  // clean signal is stop_reason, so re-roll on it directly.
+  const truncated = j.stop_reason === 'max_tokens';
+  const amtPresent = (nda.cycle_amount != null) || (nda.due_at_start != null) || (nda.due_at_end != null);
+  const feePresent = amtPresent || FEE_RE.test(String(nda.fees || ''));
+  const ft = nda.fee_type;
+  const exempt = ft === 'contingent' || ft === 'hourly' || ft === 'none';
+  const suspicious = truncated || (feePresent && !amtPresent && !exempt);
+  return { json: { ...j, suspicious } };
+});
+`.trim();
+
+const flagSuspicious = createNode(
+  'Flag Suspicious Extraction',
+  'n8n-nodes-base.code',
+  { mode: 'runOnceForAllItems', jsCode: FLAG_SUSPICIOUS_CODE },
+  { position: [4020, 120], typeVersion: 2 },
+);
+
+const isSuspicious = createNode(
+  'Suspicious Extraction?',
+  'n8n-nodes-base.if',
+  {
+    conditions: {
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'loose', version: 2 },
+      conditions: [
+        {
+          id: 'a4a0f0e2-1a1a-4a1a-901a-000000000020',
+          leftValue: '={{ $json.suspicious }}',
+          rightValue: '',
+          operator: { type: 'boolean', operation: 'true', singleValue: true },
+        },
+      ],
+      combinator: 'and',
+    },
+    options: {},
+  },
+  { position: [4180, 120], typeVersion: 2.2 },
+);
+
+// Reduce the suspicious item to ONLY its file metadata (drop the stale model
+// `content` so it can't clash when the fresh extraction merges back) and mark it
+// retried. Pure/in-memory — the download+model calls that follow live in their
+// own native nodes, never a Code node.
+const CARRY_FILE_FIELDS_CODE = `
+return $input.all().map((item) => ({ json: {
+  accountName: item.json.accountName,
+  filePath: item.json.filePath,
+  fileName: item.json.fileName,
+  ndaUrl: item.json.ndaUrl,
+  _retried: true,
+} }));
+`.trim();
+
+const carryFileFields = createNode(
+  'Carry File Fields (Retry)',
+  'n8n-nodes-base.code',
+  { mode: 'runOnceForAllItems', jsCode: CARRY_FILE_FIELDS_CODE },
+  { position: [4360, -60], typeVersion: 2 },
+);
+
+// Re-extract from the path rather than threading the original text through the
+// merge — deterministic, and it keeps the happy path (and its by-position merge)
+// completely untouched.
+const downloadRetry = createNode(
+  'Download Contract (Retry)',
+  'n8n-nodes-base.dropbox',
+  { authentication: 'oAuth2', resource: 'file', operation: 'download', path: '={{ $json.filePath }}' },
+  { position: [4540, -60], typeVersion: 1, credentials: DROPBOX_CREDENTIAL },
+);
+downloadRetry.retryOnFail = true;
+downloadRetry.maxTries = 3;
+downloadRetry.waitBetweenTries = 2000;
+
+const extractPdfRetry = createNode(
+  'Extract PDF Text (Retry)',
+  'n8n-nodes-base.extractFromFile',
+  { operation: 'pdf', binaryPropertyName: 'data', options: {} },
+  { position: [4720, -60], typeVersion: 1 },
+);
+
+const buildPromptRetry = createNode(
+  'Build Prompt (Retry)',
+  'n8n-nodes-base.set',
+  {
+    assignments: {
+      assignments: [
+        { id: 'b4a0f0e2-1b1b-4a1b-901b-000000000021', name: 'prompt', value: PROMPT_ASSIGN_VALUE, type: 'string' },
+        { id: 'b4a0f0e2-1c1c-4a1c-901c-000000000022', name: 'contractText', value: CONTRACT_TEXT_VALUE, type: 'string' },
+        { id: 'b4a0f0e2-1d1d-4a1d-901d-000000000023', name: 'toolsJson', value: TOOLS_JSON_VALUE, type: 'string' },
+      ],
+    },
+    options: {},
+  },
+  { position: [4900, -60], typeVersion: 3.4 },
+);
+
+const extractFieldsRetry = createNode(
+  'Anthropic: Extract NDA Terms (Retry)',
+  'n8n-nodes-base.httpRequest',
+  {
+    method: 'POST',
+    url: 'https://api.anthropic.com/v1/messages',
+    authentication: 'genericCredentialType',
+    genericAuthType: 'httpHeaderAuth',
+    sendHeaders: true,
+    headerParameters: {
+      parameters: [
+        { name: 'anthropic-version', value: '2023-06-01' },
+        { name: 'Content-Type', value: 'application/json' },
+      ],
+    },
+    sendBody: true,
+    specifyBody: 'json',
+    jsonBody: ANTHROPIC_JSON_BODY,
+    options: {
+      timeout: 120000,
+      batching: { batch: { batchSize: 1, batchInterval: 2500 } },
+    },
+  },
+  { position: [5080, -60], typeVersion: 4.2, credentials: ANTHROPIC_HEADER_AUTH },
+);
+extractFieldsRetry.retryOnFail = true;
+extractFieldsRetry.maxTries = 3;
+extractFieldsRetry.waitBetweenTries = 3000;
+
+// Rejoin the fresh model output (input 0) with the carried file metadata
+// (input 1) by position — the retry chain is strictly 1:1, exactly like the
+// primary Merge Terms + File.
+const mergeRetry = createNode(
+  'Merge Retry Terms + File',
+  'n8n-nodes-base.merge',
+  { mode: 'combine', combineBy: 'combineByPosition', options: {} },
+  { position: [5260, 60], typeVersion: 3 },
+);
+
+// Recombine the straight-through items (input 0) and the retried items (input 1)
+// into ONE stream so Build NDA Record — and everything downstream, notably the
+// single digest email — runs exactly once. Without this, the two connections
+// make Build NDA Record execute per-branch, splitting the email into two.
+// alwaysOutputData keeps the chain alive if one branch is empty (the common
+// case: no suspicious items), per GENERAL-LESSONS "0 items stops the chain".
+const recombine = createNode(
+  'Recombine (Retry)',
+  'n8n-nodes-base.merge',
+  { mode: 'append', options: {} },
+  { position: [4020, 300], typeVersion: 3 },
+);
+recombine.alwaysOutputData = true;
 
 const buildRequest = createNode(
   'Build NDA Record',
@@ -1091,6 +1403,60 @@ createFinancials.maxTries = 3;
 createFinancials.waitBetweenTries = 2000;
 
 // ---------------------------------------------------------------------------
+// Addendum update branch (Stage 1) — PATCH the matched financials row with the
+// changed fields, on an unambiguous match, live only. Ambiguous / no-row
+// addenda carry addendum_action = 'review: ...' and are surfaced in the email
+// and log without any write.
+// ---------------------------------------------------------------------------
+const addendumGate = createNode(
+  'Apply Addendum?',
+  'n8n-nodes-base.if',
+  {
+    conditions: {
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'loose', version: 2 },
+      conditions: [
+        {
+          id: 'a3a0f0e2-1616-4a16-9016-000000000013',
+          leftValue: '={{ $json.addendum_action }}',
+          rightValue: 'update',
+          operator: { type: 'string', operation: 'equals' },
+        },
+        {
+          id: 'a3a0f0e2-1717-4a17-9017-000000000014',
+          leftValue: "={{ $('Config').first().json.dryRun }}",
+          rightValue: '',
+          operator: { type: 'boolean', operation: 'false', singleValue: true },
+        },
+      ],
+      combinator: 'and',
+    },
+    options: {},
+  },
+  { position: [4400, 1700], typeVersion: 2.2 },
+);
+
+const applyAddendum = createNode(
+  'Update Financials Row',
+  'n8n-nodes-base.httpRequest',
+  {
+    method: 'PATCH',
+    url: '=https://api.notion.com/v1/pages/{{ $json.addendum_target_id }}',
+    authentication: 'predefinedCredentialType',
+    nodeCredentialType: 'notionApi',
+    sendHeaders: true,
+    headerParameters: { parameters: [{ name: 'Notion-Version', value: '2022-06-28' }] },
+    sendBody: true,
+    specifyBody: 'json',
+    jsonBody: '={{ $json.addendum_requestBody }}',
+    options: { batching: { batch: { batchSize: 1, batchInterval: 334 } } },
+  },
+  { position: [4620, 1700], typeVersion: 4.2, credentials: NOTION_CREDENTIAL },
+);
+applyAddendum.retryOnFail = true;
+applyAddendum.maxTries = 3;
+applyAddendum.waitBetweenTries = 2000;
+
+// ---------------------------------------------------------------------------
 // Intake-log branch — one log row per processed file (marks it completed).
 // ---------------------------------------------------------------------------
 const logGate = createNode(
@@ -1215,8 +1581,12 @@ export default createWorkflow('Ingest NDA Contracts', {
     listAccounts, filterAccountFolders, listContracts, filterPdfs,
     buildCandidate, filterNew,
     downloadContract, extractPdf, buildPrompt, extractFields,
-    mergeExtraction, buildRequest, hasNdaClauses, skipped, isDryRun, dryRunReport, createRecord,
+    mergeExtraction,
+    flagSuspicious, isSuspicious, carryFileFields, downloadRetry, extractPdfRetry,
+    buildPromptRetry, extractFieldsRetry, mergeRetry, recombine,
+    buildRequest, hasNdaClauses, skipped, isDryRun, dryRunReport, createRecord,
     finGate, finDryRun, finDryRunReport, createFinancials,
+    addendumGate, applyAddendum,
     logGate, createLogRow, aggregateForEmail, buildEmail, sendEmail,
   ],
   connections: [
@@ -1246,7 +1616,20 @@ export default createWorkflow('Ingest NDA Contracts', {
     connect(buildPrompt, extractFields),
     connect(extractFields, mergeExtraction, 0, 0),
     connect(filterNew, mergeExtraction, 0, 1),
-    connect(mergeExtraction, buildRequest),
+    // Guardrail: flag suspicious extractions, retry those once, then everything
+    // (untouched + retried) converges on Build NDA Record.
+    connect(mergeExtraction, flagSuspicious),
+    connect(flagSuspicious, isSuspicious),
+    connect(isSuspicious, recombine, 1, 0),          // not suspicious → straight through
+    connect(isSuspicious, carryFileFields, 0),       // suspicious → one automatic re-extraction
+    connect(carryFileFields, downloadRetry),
+    connect(carryFileFields, mergeRetry, 0, 1),      // file metadata → retry merge input 1
+    connect(downloadRetry, extractPdfRetry),
+    connect(extractPdfRetry, buildPromptRetry),
+    connect(buildPromptRetry, extractFieldsRetry),
+    connect(extractFieldsRetry, mergeRetry, 0, 0),   // fresh model output → retry merge input 0
+    connect(mergeRetry, recombine, 0, 1),            // retried items → recombine input 1
+    connect(recombine, buildRequest),                // one stream → one Build NDA Record run
     connect(buildRequest, hasNdaClauses),
     connect(hasNdaClauses, isDryRun, 0),        // has confidentiality provisions
     connect(hasNdaClauses, skipped, 1),         // none found → skip, but stay visible
@@ -1257,6 +1640,9 @@ export default createWorkflow('Ingest NDA Contracts', {
     connect(finGate, finDryRun, 0),                 // fin_create true → proceed
     connect(finDryRun, finDryRunReport, 0),         // dry run → preview
     connect(finDryRun, createFinancials, 1),        // live → create financials row
+    // Addendum update branch — PATCH matched row on unambiguous match (live)
+    connect(buildRequest, addendumGate),
+    connect(addendumGate, applyAddendum, 0),        // action=update AND live → PATCH
     // Intake-log branch — log every processed file (live only)
     connect(buildRequest, logGate),
     connect(logGate, createLogRow, 1),              // not dry run → write log row
