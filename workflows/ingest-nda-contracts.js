@@ -430,6 +430,19 @@ for (const item of $input.all()) {
   const amtPresent = (nda.cycle_amount != null) || (nda.due_at_start != null) || (nda.due_at_end != null);
   const currency = nda.currency || (amtPresent ? 'USD' : null);
 
+  // Net-of-advances: appearance rates are quoted GROSS but the balance is "due
+  // after the Event net of advances" — the start-advances prepay part of the
+  // rate. The forecast needs the real cash movements (start-advances + net
+  // balance = true total, not start + gross), so net the advances out of the end
+  // payment HERE in code — deterministic, not model arithmetic. Only fires when
+  // the prose says "net of ... advance" and the end amount clearly includes the
+  // advances (end > start). The model keeps reporting the gross rate; we net.
+  let dueAtEnd = nda.due_at_end;
+  const netOfAdvances = /\\bnet of\\b[^.]{0,40}advance/i.test(String(nda.fees || ''));
+  if (netOfAdvances && dueAtEnd != null && nda.due_at_start != null && dueAtEnd > nda.due_at_start) {
+    dueAtEnd = dueAtEnd - nda.due_at_start;
+  }
+
   // Guard 2 (never silently drop a fee): a known fee_type maps directly. A blank
   // or unrecognized fee_type that nonetheless clearly carries a fee (structured
   // amount, or a currency-amount in the prose) routes to REVIEW, not skip — so a
@@ -473,7 +486,7 @@ for (const item of $input.all()) {
     if (engCycleLen) u['Cycle length'] = { select: { name: engCycleLen } };
     if (nda.cycle_count != null) u['Cycle count'] = { number: nda.cycle_count };
     if (nda.due_at_start != null) u['Due at start'] = { number: nda.due_at_start };
-    if (nda.due_at_end != null) u['Due at end'] = { number: nda.due_at_end };
+    if (dueAtEnd != null) u['Due at end'] = { number: dueAtEnd };
     if (engTerms) u['Payment terms'] = { select: { name: engTerms } };
     if (nda.point_of_contact) u['Point of contact'] = { rich_text: text(nda.point_of_contact) };
     if (nda.special_obligations) u['Non-standard obligations'] = { rich_text: text(nda.special_obligations) };
@@ -538,8 +551,11 @@ for (const item of $input.all()) {
     // Only send select values that already exist as options, so automation
     // never silently creates new options on this critical DB.
     const okCurrency = (currency === 'USD' || currency === 'EUR') ? currency : null;
+    // Payment terms are ALWAYS required — the forecast engine simulates cash flow
+    // from them. Default to "Due on receipt" when the agreement states nothing
+    // mappable (rather than leaving it blank, which reads as a data-entry error).
     const okTerms = ['Due on receipt', 'Net 10', 'Net 15', 'Net 30', 'Net 45'].includes(nda.payment_terms_normalized)
-      ? nda.payment_terms_normalized : null;
+      ? nda.payment_terms_normalized : 'Due on receipt';
     const okCycleLen = ['Month', 'Quarter', 'Year'].includes(nda.cycle_length) ? nda.cycle_length : null;
 
     const finProps = {
@@ -554,16 +570,33 @@ for (const item of $input.all()) {
       'Invoicing schedule': { rich_text: text(nda.invoicing_schedule) },
     };
     if (okCurrency) finProps['Currency'] = { select: { name: okCurrency } };
-    if (nda.cycle_amount != null) finProps['Cycle payment'] = { number: nda.cycle_amount };
-    if (okCycleLen) finProps['Cycle length'] = { select: { name: okCycleLen } };
-    if (nda.cycle_count != null) finProps['Cycle count'] = { number: nda.cycle_count };
+    // Cycle fields. A retainer carries its recurring amount/length/count. Every
+    // other engagement (one_time / per_event / unclassified) has NO recurring
+    // cycle — but the forecast engine requires an EXPLICIT zero, not a blank (a
+    // blank could be a data-entry error it must surface). Follow the established
+    // DB convention for a non-recurring row: Cycle payment 0, length "Month",
+    // count 1.
+    if (nda.cycle_amount != null) {
+      finProps['Cycle payment'] = { number: nda.cycle_amount };
+      if (okCycleLen) finProps['Cycle length'] = { select: { name: okCycleLen } };
+      if (nda.cycle_count != null) finProps['Cycle count'] = { number: nda.cycle_count };
+    } else {
+      finProps['Cycle payment'] = { number: 0 };
+      finProps['Cycle length'] = { select: { name: 'Month' } };
+      finProps['Cycle count'] = { number: 1 };
+    }
     if (nda.due_at_start != null) finProps['Due at start'] = { number: nda.due_at_start };
-    if (nda.due_at_end != null) finProps['Due at end'] = { number: nda.due_at_end };
-    if (okTerms) finProps['Payment terms'] = { select: { name: okTerms } };
+    if (dueAtEnd != null) finProps['Due at end'] = { number: dueAtEnd };
+    finProps['Payment terms'] = { select: { name: okTerms } };   // always set (defaulted above)
     if (engTypes.length) finProps['Engagement type'] = { multi_select: engTypes.map((t) => ({ name: t })) };
     if (nda.engagement_start_date && ISO.test(nda.engagement_start_date)) {
       const range = { start: nda.engagement_start_date };
-      if (nda.engagement_end_date && ISO.test(nda.engagement_end_date)) range.end = nda.engagement_end_date;
+      let engEnd = (nda.engagement_end_date && ISO.test(nda.engagement_end_date)) ? nda.engagement_end_date : null;
+      // A single event (a per_event appearance) starts and ends the same day; the
+      // forecast engine requires an explicit end date, so mirror the start rather
+      // than leaving it blank (which reads as missing data).
+      if (!engEnd && nda.fee_type === 'per_event') engEnd = nda.engagement_start_date;
+      if (engEnd) range.end = engEnd;
       finProps['Engagement start&end'] = { date: range };
     }
     if (nda.effective_date && ISO.test(nda.effective_date)) finProps['Effective date'] = { date: { start: nda.effective_date } };
@@ -701,7 +734,7 @@ for (const item of $input.all()) {
       cycle_count: (nda.cycle_count ?? null),
       currency,                     // guard 1: defaulted to USD when an amount is present
       due_at_start: (nda.due_at_start ?? null),
-      due_at_end: (nda.due_at_end ?? null),
+      due_at_end: (dueAtEnd ?? null),        // net of advances (see Guard above)
       payment_terms_normalized: nda.payment_terms_normalized || null,
       engagement_type: Array.isArray(nda.engagement_type) ? nda.engagement_type : [],
       financials_action,            // what item 2 will do (computed from fee_type)
