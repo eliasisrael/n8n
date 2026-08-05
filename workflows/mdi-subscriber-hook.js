@@ -35,8 +35,10 @@
  *        Status         = "Captured 5%"
  *        Lead source    = "Website form"
  *      Children: one paragraph block containing the Message, if present.
- *   8. Send a transactional confirmation email via Mandrill, using the
- *      branch-specific Mailchimp Transactional template (mc_template_id).
+ *   8. Send a branded confirmation email from Eve's mailbox (Graph
+ *      /me/sendMail), using the branch-specific subject + HTML template.
+ *      Webflow is answered (200) as soon as the pipeline page is created, so a
+ *      send failure surfaces via the error workflow without causing a retry.
  *
  * Email Form branch skips steps 7–8 and responds 200 immediately after
  * the upsert.
@@ -51,6 +53,7 @@
  */
 
 import { createWorkflow, createNode, connect } from '../lib/workflow.js';
+import { readFileSync } from 'node:fs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -90,13 +93,12 @@ if (!WEBFLOW_VERIFICATION_KEY) {
   throw new Error('Missing WEBFLOW_VERIFICATION_KEY in .env');
 }
 
-// Mandrill credential (n8n "HTTP Custom Auth" type). The credential's JSON
-// field is set to { "body": { "key": "<api key>" } } — so n8n injects the
-// Mandrill API key into the HTTP Request body at execution time. Keeps the
-// key out of the compiled workflow JSON and lets us rotate the key in the
-// n8n UI without rebuilding.
-const MANDRILL_CREDENTIAL = {
-  httpCustomAuth: { id: 'yXBgKBXF39NLq3MJ', name: 'Mandrill Custom Auth' },
+// Confirmation emails send from Eve's Microsoft 365 mailbox via Graph
+// /me/sendMail (same credential the other email workflows use), replacing the
+// old Mandrill/Mailchimp-template path — lower volume, no template dependency,
+// and it comes personally from Eve (the templates are signed "Best, Eve").
+const OUTLOOK_CREDENTIAL = {
+  microsoftOutlookOAuth2Api: { id: 'xUInnrPuP6ogucEt', name: 'Microsoft Outlook account' },
 };
 
 // Preserve the existing webhook path so the URL doesn't change.
@@ -110,14 +112,31 @@ const BRANCHES = [
   { key: 'equip',      name: 'Equip my organization',    tag: 'BulkBookPurchase',  desc: 'Equip Organization' },
 ];
 
-// Mailchimp Transactional template IDs per branch. These are mc_template_id
-// integers (visible in the Mailchimp template editor URL), used with the
-// /messages/send-mc-template endpoint. NOT the native-Mandrill template slug
-// scheme — that's a different endpoint.
-const BRANCH_TEMPLATES = {
-  bring_eve: 10119871,  // MDID Bring Eve To Your Team (transactional)
-  book_eve:  10119870,  // MDID Book Eve To Speak (transactional)
-  equip:     10119869,  // MDID Equip Your Organization (transactional)
+// Per-branch confirmation email = subject + branded HTML. The HTML is the exact
+// Mailchimp template export (kept pristine in workflows/templates/ so it can be
+// re-exported/diffed), cleaned at BUILD time of the Mailchimp-only bits the raw
+// export carries: merge-language conditional comments, the *|MC:SUBJECT|* /
+// *|MC_PREVIEW_TEXT|* placeholders, the hidden preview-padding block, and the
+// trailing Mailchimp tracking <script>. *|FNAME|* becomes the {{FNAME}} sentinel
+// that Build Email substitutes per recipient at run time. The signature logo is
+// an absolute mcusercontent.com URL, so it still renders when sent from Outlook.
+function cleanTemplate(html) {
+  return html
+    .replace(/<!--\*\|IF:MC_PREVIEW_TEXT\|\*-->[\s\S]*?<!--\*\|END:IF\|\*-->/g, '')
+    .replace(/<div style="display: none; max-height: 0px;[\s\S]*?<\/div><!--MCE_TRACKING_PIXEL-->/g, '')
+    .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+    .replace(/\*\|MC:SUBJECT\|\*/g, '')
+    .replace(/\*\|MC_PREVIEW_TEXT\|\*/g, '')
+    .replace(/\*\|FNAME\|\*/g, '{{FNAME}}')
+    .trim();
+}
+const loadTemplate = (file) =>
+  cleanTemplate(readFileSync(new URL('./templates/' + file, import.meta.url), 'utf8'));
+
+const BRANCH_EMAILS = {
+  bring_eve: { subject: "Thanks for reaching out — here's how we can work together", html: loadTemplate('mdi-bring-eve.html') },
+  book_eve:  { subject: "Thanks for reaching out — let's talk about your event",     html: loadTemplate('mdi-book-eve.html') },
+  equip:     { subject: 'Thanks for reaching out — one question first',              html: loadTemplate('mdi-equip.html') },
 };
 
 // ---------------------------------------------------------------------------
@@ -738,20 +757,18 @@ const createOpportunity = createNode(
 createOpportunity.retryOnFail = true;
 
 // ---------------------------------------------------------------------------
-// Send transactional confirmation email via Mandrill for the 3 opportunity
-// branches. Template is selected at runtime by branch_source. Failures are
-// logged via the Error Handler but don't block the 200 response to Webflow —
-// the Notion contact + Sales Pipeline page have already been created, so a
-// retry would create duplicates.
+// Send the branded confirmation email from Eve's mailbox (Graph /me/sendMail)
+// for the 3 opportunity branches. Subject + HTML are selected by branch_source.
 //
-// We call /messages/send-mc-template directly (not via the n8n Mandrill node)
-// because the templates are Mailchimp Transactional templates referenced by
-// numeric mc_template_id, and the built-in node only handles native Mandrill
-// templates referenced by slug.
+// Error handling: the webhook already responded 200 (Respond OK fires off Create
+// Sales Pipeline Page, in parallel with this path), so a send failure can surface
+// LOUDLY without triggering a Webflow retry / duplicate. Send Email therefore
+// uses n8n's default onError (stop → error workflow), unlike the old Mandrill
+// node whose continueRegularOutput silently swallowed a 500.
 // ---------------------------------------------------------------------------
 
-const buildMandrillBody = createNode(
-  'Build Mandrill Body',
+const buildEmail = createNode(
+  'Build Email',
   'n8n-nodes-base.code',
   {
     mode: 'runOnceForEachItem',
@@ -763,47 +780,37 @@ const buildMandrillBody = createNode(
 // pairedItem), never an Execute Workflow, so .item resolves correctly and stays
 // right when a webhook carries multiple subscribers (unlike .first()).
 const ctx = $('Merge Contact + Fields').item.json;
-const templates = ${JSON.stringify(BRANCH_TEMPLATES)};
-const mcTemplateId = templates[ctx.branch_source];
+const EMAILS = ${JSON.stringify(BRANCH_EMAILS)};
+const tpl = EMAILS[ctx.branch_source];
+// Only the 3 opportunity branches reach here (they set branch_source); a missing
+// template is a real defect, so fail loudly rather than send a blank email.
+if (!tpl) throw new Error('No confirmation-email template for branch_source: ' + ctx.branch_source);
 
-// The API key is injected by the HTTP Custom Auth credential on the Send
-// Mandrill Template node — no 'key' field here.
-//
-// Mailchimp Transactional templates only substitute merge tags from
-// global_merge_vars (flat array), not from per-recipient merge_vars. This node
-// runs once per item and each send has exactly one recipient (ctx.email), so
-// global is functionally per-recipient even when a webhook carries several.
-//
-// bcc_address copies every send to Eve so she has a record of every
-// transactional email the system sends from her account.
+const firstName = String(ctx.first_name || '').trim() || 'there';
+const html = tpl.html.split('{{FNAME}}').join(firstName);
+
 const body = {
-  mc_template_id: mcTemplateId,
-  mc_template_version: 'published',
   message: {
-    to: [{ email: ctx.email, type: 'to' }],
-    bcc_address: 'eve@vennfactory.com',
-    merge: true,
-    merge_language: 'mailchimp',
-    global_merge_vars: [
-      { name: 'FNAME', content: ctx.first_name || '' },
-      { name: 'EMAIL', content: ctx.email },
-    ],
+    subject: tpl.subject,
+    body: { contentType: 'HTML', content: html },
+    toRecipients: [{ emailAddress: { address: ctx.email } }],
   },
+  saveToSentItems: true,   // keeps Eve's copy in Sent (replaces the old bcc)
 };
 
-return { json: { requestBody: JSON.stringify(body), mcTemplateId } };`,
+return { json: { requestBody: JSON.stringify(body) } };`,
   },
   { position: [3136, -208], typeVersion: 2 },
 );
 
-const sendMandrillTemplate = createNode(
-  'Send Mandrill Template',
+const sendEmail = createNode(
+  'Send Confirmation Email',
   'n8n-nodes-base.httpRequest',
   {
     method: 'POST',
-    url: 'https://mandrillapp.com/api/1.4/messages/send-mc-template',
-    authentication: 'genericCredentialType',
-    genericAuthType: 'httpCustomAuth',
+    url: 'https://graph.microsoft.com/v1.0/me/sendMail',
+    authentication: 'predefinedCredentialType',
+    nodeCredentialType: 'microsoftOutlookOAuth2Api',
     sendBody: true,
     specifyBody: 'json',
     jsonBody: '={{ $json.requestBody }}',
@@ -812,11 +819,15 @@ const sendMandrillTemplate = createNode(
   {
     position: [3344, -208],
     typeVersion: 4.2,
-    credentials: MANDRILL_CREDENTIAL,
+    credentials: OUTLOOK_CREDENTIAL,
   },
 );
-sendMandrillTemplate.retryOnFail = true;
-sendMandrillTemplate.onError = 'continueRegularOutput';
+sendEmail.retryOnFail = true;
+sendEmail.maxTries = 3;
+sendEmail.waitBetweenTries = 2000;
+// No onError override: a send that still fails after retries stops the workflow
+// and fires the error handler (surfaced, not swallowed). Safe because Respond OK
+// has already answered Webflow off the Create Sales Pipeline Page branch.
 
 // ---------------------------------------------------------------------------
 // Shared terminal: respond 200 OK after both paths complete.
@@ -853,7 +864,7 @@ export default createWorkflow('MDI Subscriber Hook', {
     mergeContactFields,
     // Post-upsert opportunity creation
     hasOpportunity, buildOpportunityBody, createOpportunity,
-    buildMandrillBody, sendMandrillTemplate,
+    buildEmail, sendEmail,
     respondOk,
   ],
   connections: [
@@ -901,9 +912,13 @@ export default createWorkflow('MDI Subscriber Hook', {
     connect(hasOpportunity, buildOpportunityBody, 0),  // true (has opp_desc) → create opportunity
     connect(hasOpportunity, respondOk,            1),  // false (Email Form) → respond immediately
     connect(buildOpportunityBody, createOpportunity),
-    connect(createOpportunity, buildMandrillBody),
-    connect(buildMandrillBody, sendMandrillTemplate),
-    connect(sendMandrillTemplate, respondOk),
+    // Once the Sales Pipeline page exists, answer Webflow (200) AND send the
+    // email in parallel. Responding first means an email failure surfaces via
+    // the error workflow without making Webflow retry (which would duplicate the
+    // contact + page).
+    connect(createOpportunity, respondOk),
+    connect(createOpportunity, buildEmail),
+    connect(buildEmail, sendEmail),
   ],
   settings: {
     errorWorkflow: 'EZTb8m4htw60nP0b',
