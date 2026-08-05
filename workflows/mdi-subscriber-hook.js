@@ -36,7 +36,7 @@
  *        Lead source    = "Website form"
  *      Children: one paragraph block containing the Message, if present.
  *   8. Send a branded confirmation email from Eve's mailbox (Graph
- *      /me/sendMail), using the branch-specific subject + HTML template.
+ *      /me/sendMail), using the branch-specific subject + clean HTML.
  *      Webflow is answered (200) as soon as the pipeline page is created, so a
  *      send failure surfaces via the error workflow without causing a retry.
  *
@@ -53,7 +53,6 @@
  */
 
 import { createWorkflow, createNode, connect } from '../lib/workflow.js';
-import { readFileSync } from 'node:fs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -112,31 +111,84 @@ const BRANCHES = [
   { key: 'equip',      name: 'Equip my organization',    tag: 'BulkBookPurchase',  desc: 'Equip Organization' },
 ];
 
-// Per-branch confirmation email = subject + branded HTML. The HTML is the exact
-// Mailchimp template export (kept pristine in workflows/templates/ so it can be
-// re-exported/diffed), cleaned at BUILD time of the Mailchimp-only bits the raw
-// export carries: merge-language conditional comments, the *|MC:SUBJECT|* /
-// *|MC_PREVIEW_TEXT|* placeholders, the hidden preview-padding block, and the
-// trailing Mailchimp tracking <script>. *|FNAME|* becomes the {{FNAME}} sentinel
-// that Build Email substitutes per recipient at run time. The signature logo is
-// an absolute mcusercontent.com URL, so it still renders when sent from Outlook.
-function cleanTemplate(html) {
-  return html
-    .replace(/<!--\*\|IF:MC_PREVIEW_TEXT\|\*-->[\s\S]*?<!--\*\|END:IF\|\*-->/g, '')
-    .replace(/<div style="display: none; max-height: 0px;[\s\S]*?<\/div><!--MCE_TRACKING_PIXEL-->/g, '')
-    .replace(/<script\b[\s\S]*?<\/script>/gi, '')
-    .replace(/\*\|MC:SUBJECT\|\*/g, '')
-    .replace(/\*\|MC_PREVIEW_TEXT\|\*/g, '')
-    .replace(/\*\|FNAME\|\*/g, '{{FNAME}}')
-    .trim();
-}
-const loadTemplate = (file) =>
-  cleanTemplate(readFileSync(new URL('./templates/' + file, import.meta.url), 'utf8'));
+// Per-branch confirmation email = subject + HTML. The copy is verbatim from the
+// Mailchimp templates (originals archived in git history), but rebuilt as clean,
+// email-safe HTML: one centered 600px table, inline styles only, no <style>-block
+// dependency, no media queries, no deep table nesting, no white-space:pre-wrap.
+//
+// Why not send the raw Mailchimp export: Exchange sanitizes/reflows outbound HTML
+// on Graph /me/sendMail, and Mailchimp's ~15-level nested content block (which
+// relies on the stripped <head> <style>) collapses — text wrapped after 2–3
+// words in the delivered mail. The simpler signature table survived intact, which
+// is the pattern this rebuild follows. {{FNAME}} is substituted by Build Email.
+const CALENDLY = 'https://calendly.com/eve-vennfactory/discovery-call-work-with-eve';
+const LOGO_URL = 'https://mcusercontent.com/e0aa8680af271a6c83ca25927/images/56f35f7d-6d51-3f42-2d43-d443ae66cda9.png';
+
+const P = (inner) => `<p style="margin:0 0 16px 0;">${inner}</p>`;
+const CALL = (label) => `<a href="${CALENDLY}" style="color:#4183c4;">${label}</a>`;
+
+// Signature — the block that already rendered correctly, kept simple.
+const SIGNATURE = `
+<img src="${LOGO_URL}" width="211" alt="Eve Maler" style="display:block;border:0;outline:none;text-decoration:none;width:211px;max-width:211px;height:auto;margin:8px 0 12px 0;">
+<div style="font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:20px;color:#3c584d;">President &amp; Founder, Venn Factory<br>Digital Identity Strategist<br>Author &amp; Speaker<br>Board Member</div>
+<div style="font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:22px;color:#3c584d;font-weight:bold;padding-top:12px;">Cell and Signal: <a href="tel:+14253456756" style="color:#3c584d;text-decoration:none;">+1 (425) 345-6756</a></div>
+<div style="font-family:Helvetica,Arial,sans-serif;font-size:13px;line-height:20px;color:#3c584d;padding-top:8px;"><a href="https://masteringdigitalidentity.com/" style="color:#3c584d;font-weight:bold;">Sign up</a> to receive updates about Eve’s new book, <em>Mastering Digital Identity</em></div>`;
+
+// Clean single-column shell. Body text is 16px/24px #333 Helvetica; padding gives
+// a comfortable measure so lines wrap naturally (the whole point of the rebuild).
+const shell = (body) => `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background-color:#f4f4f4;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f4f4;"><tr><td align="center" style="padding:24px 12px;">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:600px;background-color:#ffffff;">
+<tr><td style="padding:24px 32px 8px 32px;font-family:Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#333333;">
+${body}
+</td></tr>
+<tr><td style="padding:4px 32px 28px 32px;">${SIGNATURE}</td></tr>
+</table></td></tr></table>
+</body></html>`;
+
+const BODY_BRING_EVE = [
+  P('Hi {{FNAME}},'),
+  P('Thanks for reaching out — I’m glad you did.'),
+  P('Working directly with leadership teams is where the frameworks in <em>Mastering Digital Identity</em> get traction fastest. Two formats worth considering:'),
+  P('<strong>Leadership Alignment Session</strong> <em>(5–10 participants)</em>'),
+  P('A 90-minute facilitated session applying the Identity Product Ownership lens to your organization. It includes customized executive discussion prompts, an executive asset (such as an Identity Ownership Maturity self-assessment), a limited-edition branded asset (think “swag”), and a signed copy of the book for each participant.'),
+  P('This format is designed for teams that want to assess where they stand and align on a direction — without a lengthy run-up.'),
+  P('<strong>90-Day Executive Coaching Engagement</strong>'),
+  P('A sustained working relationship — typically with a CISO, CPO, or senior identity program owner — focused on building identity product ownership capability inside your organization. We work through the framework together, applied to your specific context and timeline.'),
+  P('I’ll follow up personally to understand what you’re navigating and which approach fits. Reply with anything that would help me come prepared — or ' + CALL('book a discovery call') + ' if that’s easier.'),
+  P('Best,<br>Eve'),
+].join('\n');
+
+const BODY_BOOK_EVE = [
+  P('Hi {{FNAME}},'),
+  P('Thanks for reaching out — I’m glad the book prompted you to get in touch.'),
+  P('Over the past year, I’ve spoken at SXSW, and keynoted at the European Identity &amp; Cloud Conference, and executive gatherings ranging from practitioner forums to client advisory councils. The book has added a new dimension to those conversations: a structured way to bring identity strategy into the room, not just identity awareness.'),
+  P('Here are three formats that work well for different audiences and contexts:'),
+  P('<strong>Executive Book Reading</strong> <em>(10–40 participants)</em>'),
+  P('A 30-minute in-person reading with executive commentary and facilitated discussion. Includes an executive asset and signed book copies for participants. Well suited to board meetings, executive team offsites, client advisory councils, and partner gatherings.'),
+  P('<strong>Enterprise Activation</strong> <em>(50+ participants)</em>'),
+  P('A keynote or executive-sponsored town hall built around a book theme, designed to inspire and galvanize. Includes an optional follow-on advisory session and signed book copies for participants.'),
+  P('<strong>Conference &amp; Client Forum Activation</strong>'),
+  P('The full live <em>Mastering Digital Identity</em> experience: keynote, optional VIP roundtable or fireside chat, limited-edition assets, and signed book copies for participants.'),
+  P('Tell me about your event and audience — or ' + CALL('book a discovery call') + ' if that’s easier. I’ll follow up with a recommendation once I understand the context.'),
+  P('Best,<br>Eve'),
+].join('\n');
+
+const BODY_EQUIP = [
+  P('Hi {{FNAME}},'),
+  P('Thanks for reaching out.'),
+  P('One question before I point you in the right direction: is there an event or gathering you have in mind — a team offsite, board meeting, conference, or client session — or are you primarily looking to get copies into people’s hands for independent reading?'),
+  P('The answer shapes what’s available. If there’s an event, I can build a full experience around it, including facilitation materials and signed copies. If it’s a standalone order, I can point you to where to buy.'),
+  P('Reply here, or ' + CALL('book a discovery call') + ' if you’d like to talk it through.'),
+  P('Best,<br>Eve'),
+].join('\n');
 
 const BRANCH_EMAILS = {
-  bring_eve: { subject: "Thanks for reaching out — here's how we can work together", html: loadTemplate('mdi-bring-eve.html') },
-  book_eve:  { subject: "Thanks for reaching out — let's talk about your event",     html: loadTemplate('mdi-book-eve.html') },
-  equip:     { subject: 'Thanks for reaching out — one question first',              html: loadTemplate('mdi-equip.html') },
+  bring_eve: { subject: "Thanks for reaching out — here's how we can work together", html: shell(BODY_BRING_EVE) },
+  book_eve:  { subject: "Thanks for reaching out — let's talk about your event",     html: shell(BODY_BOOK_EVE) },
+  equip:     { subject: 'Thanks for reaching out — one question first',              html: shell(BODY_EQUIP) },
 };
 
 // ---------------------------------------------------------------------------
