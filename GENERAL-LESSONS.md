@@ -736,6 +736,41 @@ Then assert `activeVersionId === versionId`. Note `activate` is safe/idempotent 
 
 ---
 
+## Sending Email via Microsoft Graph
+
+### Send from a mailbox with an HTTP Request node (no Mandrill/SMTP needed)
+For low-volume transactional/confirmation email, send from a connected mailbox via
+Graph instead of a third-party ESP. HTTP Request node (v4.2): `POST
+https://graph.microsoft.com/v1.0/me/sendMail`, `authentication:
+predefinedCredentialType`, `nodeCredentialType: microsoftOutlookOAuth2Api`, body
+`{ message: { subject, body: { contentType: "HTML", content }, toRecipients:
+[{ emailAddress: { address } }] }, saveToSentItems: true }`. Sends **as** the
+credential's mailbox owner (so it reads as a personal email), and
+`saveToSentItems` keeps a copy in Sent (no need to bcc yourself).
+
+### Do NOT send an ESP's exported HTML (Mailchimp/etc.) raw through Graph
+Exchange **sanitizes and reflows outbound HTML** on send — it strips much of
+`<head>`/`<style>` and rewrites tables. An ESP export (e.g. a Mailchimp template)
+relies on send-time CSS inlining and deep nested tables + a `<style>` block; sent
+raw through Graph the layout **collapses** (real incident: body text wrapped after
+2–3 words while the simpler signature table survived intact — the tell). Rebuild
+transactional email as **clean, email-safe HTML**: a single full-width (or one
+centered) table, **inline styles only**, no `<style>` block, no `@media` queries,
+no deep nesting, no `white-space: pre-wrap`. Put cell padding on a `<td>` (Outlook's
+Word engine ignores `<body>` padding). Remote images at absolute URLs still load.
+
+### `onError: continueRegularOutput` silently swallows HTTP errors
+On an HTTP Request node, `continueRegularOutput` turns a non-2xx response into a
+**normal output item** — so a 500 flows downstream as if it succeeded and the
+execution shows **success**. Real incident: a failing send looked fine for days.
+For a webhook that must answer fast but whose later side-effects can fail: **Respond
+to Webhook EARLY** (e.g. right after the durable write), then let the risky send run
+with **default error handling** (`stopWorkflow` → error workflow) so a real failure
+surfaces loudly. The early response means the caller already got 200 and won't retry
+(no duplicate side-effects), and the failure still fires the error workflow. Reserve
+`continueRegularOutput`/`continueErrorOutput` for when you explicitly route and
+inspect the error item — never as a way to "not fail."
+
 ## Microsoft Graph Webhooks
 
 ### Subscription validation handshake
