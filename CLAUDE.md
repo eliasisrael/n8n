@@ -218,12 +218,18 @@ Other workflows that modify contacts should call the upsert sub-workflow rather 
   - **Binary/file uploads → a node that streams from the binary store** (HTTP Request with `formBinaryData`), never a Code node building `Buffer.concat`.
   - **Reshape fields → Set/Edit Fields; filter → Filter/IF; combine → Merge; route → Switch; call APIs → the service node or HTTP Request.**
   - Reserve Code nodes for pure, fast, in-memory JS with no native equivalent — and keep them off the binary/HTTP path entirely.
-- **Always check both lessons files** before designing solutions:
+- **HARD RULE — never patch workflows in place. Work only from the source files in `workflows/`.** Every change goes through the source `.js` → `build.js` → `push-workflows.js`. Never fetch-modify-PUT a workflow directly on the server, and never hand-edit a workflow in the n8n UI as the source of a change (UI edits create an unpublished draft that diverges from source). Before touching any workflow, confirm its source exists in `workflows/`; if it's a server-only workflow, adopt it into the repo first. (The legacy `patch-router*.js` scripts predate this rule — don't add new in-place patch scripts.)
+- **Always check our accumulated n8n lessons — both when planning work and when debugging:**
+  - **Cognee** — search the Cognee knowledge graph for relevant n8n lessons (`cognee-memory:cognee-search`). Check it every time you plan a change and every time you debug an issue, not just occasionally.
   - **`GENERAL-LESSONS.md`** — general n8n workflow knowledge (node parameter formats, import quirks, integration patterns). This file is portable across projects.
-  - **`LESSONS.md`** — project-specific knowledge (server credentials, workflow-specific layouts, future work plans)
-- **Always record new lessons** when a bug is found, a workaround is discovered, or something behaves differently than expected. Put general n8n knowledge in `GENERAL-LESSONS.md` and project-specific knowledge in `LESSONS.md`.
+  - **`LESSONS.md`** — project-specific knowledge (server credentials, workflow-specific layouts, future work plans).
+- **When work is complete, review what we learned and save the lessons:**
+  - **General n8n findings → Cognee** (`cognee-memory:cognee-remember`) — portable knowledge that applies to any n8n project. Also record it in `GENERAL-LESSONS.md`.
+  - **Project-specific findings → local memory** (the memory files) — server/workflow-specific knowledge tied to this deployment. Also record it in `LESSONS.md`.
+  - Trigger this review whenever a bug is found, a workaround is discovered, or something behaves differently than expected.
 - Always use `lib/workflow.js` helpers to build workflows — never hand-write raw JSON
 - Test builds with `node build.js` after creating or modifying workflows
+- **Always ensure the workflow you intend is active AND published.** n8n has a draft/published split (see the **Publish model** under Target Environment): production and callers (sub-workflows, error workflows) run the **published** version, while manual/editor runs use the **draft**. After any deploy, verify `activeVersionId === versionId` and that the workflow is active — a change that is pushed but not published does nothing in production, and testing a stale/edited draft by hand will not reflect what's live.
 - Node type IDs must match n8n 1.x naming (e.g., `n8n-nodes-base.httpRequest`, not legacy names)
 - Use `typeVersion` in opts when a node has multiple versions (check n8n docs for the correct version)
 - Keep workflow files focused: one automation per file
