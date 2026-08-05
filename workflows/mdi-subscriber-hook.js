@@ -113,7 +113,7 @@ const BRANCHES = [
 
 // Per-branch confirmation email = subject + HTML. The copy is verbatim from the
 // Mailchimp templates (originals archived in git history), but rebuilt as clean,
-// email-safe HTML: one centered 600px table, inline styles only, no <style>-block
+// email-safe HTML: a single full-width table, inline styles only, no <style>-block
 // dependency, no media queries, no deep table nesting, no white-space:pre-wrap.
 //
 // Why not send the raw Mailchimp export: Exchange sanitizes/reflows outbound HTML
@@ -134,18 +134,19 @@ const SIGNATURE = `
 <div style="font-family:Helvetica,Arial,sans-serif;font-size:15px;line-height:22px;color:#3c584d;font-weight:bold;padding-top:12px;">Cell and Signal: <a href="tel:+14253456756" style="color:#3c584d;text-decoration:none;">+1 (425) 345-6756</a></div>
 <div style="font-family:Helvetica,Arial,sans-serif;font-size:13px;line-height:20px;color:#3c584d;padding-top:8px;"><a href="https://masteringdigitalidentity.com/" style="color:#3c584d;font-weight:bold;">Sign up</a> to receive updates about Eve’s new book, <em>Mastering Digital Identity</em></div>`;
 
-// Clean single-column shell. Body text is 16px/24px #333 Helvetica; padding gives
-// a comfortable measure so lines wrap naturally (the whole point of the rebuild).
+// Full-width personal-email shell: no centered card / max-width cap, so the body
+// uses the client's full reading width and reads like a normal note from Eve —
+// not a newsletter. A single 100%-width table with a padded cell keeps a little
+// breathing room from the edges (body padding is ignored by Outlook's Word
+// engine, but td padding is honored). Body text is 16px/24px #333 Helvetica.
 const shell = (body) => `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background-color:#f4f4f4;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f4f4;"><tr><td align="center" style="padding:24px 12px;">
-<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:600px;background-color:#ffffff;">
-<tr><td style="padding:24px 32px 8px 32px;font-family:Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#333333;">
+<body style="margin:0;padding:0;background-color:#ffffff;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+<td style="padding:20px 28px;font-family:Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#333333;">
 ${body}
-</td></tr>
-<tr><td style="padding:4px 32px 28px 32px;">${SIGNATURE}</td></tr>
-</table></td></tr></table>
+<div style="padding-top:8px;">${SIGNATURE}</div>
+</td></tr></table>
 </body></html>`;
 
 const BODY_BRING_EVE = [
