@@ -756,8 +756,13 @@ const buildMandrillBody = createNode(
   {
     mode: 'runOnceForEachItem',
     jsCode: `\
-// $json is the merged item (upsert result + mapped fields), paired per-item.
-const ctx = $json;
+// This node sits AFTER Build Opportunity Body + Create Sales Pipeline Page, both
+// of which replace the item — so $json here is the Notion page response, NOT the
+// mapped fields. Read them from the Merge output via a PAIRED reference: the
+// chain back to the merge crosses only Code/HTTP/IF nodes (which preserve
+// pairedItem), never an Execute Workflow, so .item resolves correctly and stays
+// right when a webhook carries multiple subscribers (unlike .first()).
+const ctx = $('Merge Contact + Fields').item.json;
 const templates = ${JSON.stringify(BRANCH_TEMPLATES)};
 const mcTemplateId = templates[ctx.branch_source];
 
