@@ -591,6 +591,34 @@ const upsertContact = createNode(
 );
 
 // ---------------------------------------------------------------------------
+// Re-pair the mapped fields onto the upsert result.
+//
+// Upsert Contact is an Execute Workflow (data-replacing) whose output carries
+// only the contact record (id/page_id/email/…) and — critically — a corrupted
+// pairedItem, so any downstream `$('Has Email?').item` resolves EMPTY. That
+// silently sent every opportunity submission down the "no opportunity" branch:
+// no Sales Pipeline page, no Mandrill email.
+//
+// Fix per GENERAL-LESSONS ("item pairing breaks across data-replacing nodes"):
+// join the upsert output (input 1) with the Has Email? items (input 2) on
+// `email`, so each contact row regains its opportunity_desc / submitter_name /
+// message / branch_source / first_name. Field-based (not position/`.first()`)
+// so it stays correct when a webhook delivers MULTIPLE subscribers — each row
+// is paired by its own email, independent of order or of rows the Email Valid?
+// filter dropped upstream.
+const mergeContactFields = createNode(
+  'Merge Contact + Fields',
+  'n8n-nodes-base.merge',
+  {
+    mode: 'combine',
+    fieldsToMatchString: 'email',
+    joinMode: 'enrichInput1',   // keep every upserted contact, add its mapped fields
+    options: {},
+  },
+  { position: [2200, 200], typeVersion: 3 },
+);
+
+// ---------------------------------------------------------------------------
 // Post-upsert branch: 3 new branches diverge to create a Sales Pipeline
 // opportunity; Email Form branch short-circuits to Respond OK.
 // Gate = opportunity_desc is non-empty (only the 3 new branches set it).
@@ -605,7 +633,9 @@ const hasOpportunity = createNode(
       conditions: [
         {
           id: crypto.randomUUID(),
-          leftValue: "={{ $('Has Email?').item.json.opportunity_desc }}",
+          // Read the merged item directly ($json), not $('Has Email?').item —
+          // the latter is empty here because Upsert Contact broke the pairing.
+          leftValue: '={{ $json.opportunity_desc }}',
           rightValue: '',
           operator: { type: 'string', operation: 'notEmpty', singleValue: true },
         },
@@ -634,8 +664,10 @@ const buildOpportunityBody = createNode(
   {
     mode: 'runOnceForEachItem',
     jsCode: `\
-const ctx = $('Has Email?').item.json;
-const upserted = $input.item.json;
+// Merge Contact + Fields put the upsert result AND the mapped fields on one
+// item, so read both from $json (paired per-item; safe for multi-item webhooks).
+const ctx = $json;
+const upserted = $json;
 
 const submitterName = (ctx.submitter_name || '').trim();
 const desc = (ctx.opportunity_desc || '').trim();
@@ -724,7 +756,8 @@ const buildMandrillBody = createNode(
   {
     mode: 'runOnceForEachItem',
     jsCode: `\
-const ctx = $('Has Email?').item.json;
+// $json is the merged item (upsert result + mapped fields), paired per-item.
+const ctx = $json;
 const templates = ${JSON.stringify(BRANCH_TEMPLATES)};
 const mcTemplateId = templates[ctx.branch_source];
 
@@ -732,8 +765,9 @@ const mcTemplateId = templates[ctx.branch_source];
 // Mandrill Template node — no 'key' field here.
 //
 // Mailchimp Transactional templates only substitute merge tags from
-// global_merge_vars (flat array), not from per-recipient merge_vars. Each
-// execution has exactly one recipient, so global is functionally per-recipient.
+// global_merge_vars (flat array), not from per-recipient merge_vars. This node
+// runs once per item and each send has exactly one recipient (ctx.email), so
+// global is functionally per-recipient even when a webhook carries several.
 //
 // bcc_address copies every send to Eve so she has a record of every
 // transactional email the system sends from her account.
@@ -811,6 +845,7 @@ export default createWorkflow('MDI Subscriber Hook', {
     respondOkUnknown, stopUnknownName,
     // Shared downstream
     hasEmail, validateEmail, emailValid, serviceDown, upsertContact,
+    mergeContactFields,
     // Post-upsert opportunity creation
     hasOpportunity, buildOpportunityBody, createOpportunity,
     buildMandrillBody, sendMandrillTemplate,
@@ -852,8 +887,12 @@ export default createWorkflow('MDI Subscriber Hook', {
     connect(serviceDown, upsertContact, 0),
     // serviceDown false (4xx) → bad email, silently dropped
 
+    // Re-pair mapped fields onto the upsert result (join on email), then gate.
+    connect(upsertContact, mergeContactFields, 0, 0),  // upserted contacts → input 1
+    connect(hasEmail,      mergeContactFields, 0, 1),  // mapped fields → input 2
+    connect(mergeContactFields, hasOpportunity),
+
     // Post-upsert opportunity branch
-    connect(upsertContact, hasOpportunity),
     connect(hasOpportunity, buildOpportunityBody, 0),  // true (has opp_desc) → create opportunity
     connect(hasOpportunity, respondOk,            1),  // false (Email Form) → respond immediately
     connect(buildOpportunityBody, createOpportunity),
